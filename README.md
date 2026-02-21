@@ -1,7 +1,8 @@
 # MakeMIT_2026_Team7
+
 Healthcare - Sauron - MLH (Gemini API) Track
 
-## Flask App Setup
+## Quick Start (Flask Prototype)
 
 ### 1) Create and activate a virtual environment
 
@@ -22,43 +23,69 @@ pip install -r requirements.txt
 python app.py
 ```
 
-The app will run on `http://localhost:5000`.
+Server URL: `http://localhost:5000`  
+Runtime assumption: access the app via `http://127.0.0.1:5000` (HTTP, not HTTPS).
 
-## Current Workflow (Web + FSM)
+## Confirmed System Architecture
 
-1. Start screen waits in `WAITING_FOR_USER`.
-2. `Start Monitoring` enters distance monitoring and shows camera feed.
-3. Distance updates keep UI in monitor mode until threshold is reached.
-4. Face recognition branch:
-   - `new`: open registration form, capture/upload face image, save local JSON + JPG.
-   - `existing`: load saved profile, run pill dispense placeholder, then Gemini advice placeholder + speaking.
-5. User can press `Stop Advice` to finish early.
-6. Success screen appears briefly, then FSM auto-returns to start.
+- Jetson runs local RealSense-based face recognition.
+- Face recognition result is local, not from cloud auth API.
+- ESP32 connects to Jetson over USB serial (`UART`).
+- Motors use external battery power rail.
+- ESP32 logic path is powered through USB from Jetson.
+- Gemini is optional post-dispense advice enhancement.
 
-## Local Storage
+## FSM Workflow (Current Code)
 
-- Face images are stored as `data/faces/<user_id>.jpg`
-- User profiles are stored as `data/users/<user_id>.json`
+Detailed states:
 
-These folders are gitignored and created automatically.
+1. `WAITING_FOR_USER`
+2. `MONITORING_DISTANCE`
+3. `FACE_RECOGNITION`
+4. `REGISTER_NEW_USER`
+5. `REGISTRATION_SUCCESS`
+6. `DISPENSING_PILL`
+7. `GENERATING_ADVICE`
+8. `SPEAKING_ADVICE`
+9. `SESSION_SUCCESS`
+10. `ERROR`
 
-## API Routes
+High-level grouped stages:
+
+1. `IDLE`
+2. `AUTHENTICATION`
+3. `DISPENSING`
+4. `ADVICE_COMPLETION`
+5. `FAULT`
+
+## Local Storage (Prototype)
+
+- Face images: `data/faces/<user_id>.jpg`
+- User profiles: `data/users/<user_id>.json`
+- Dispense logs: `data/logs/dispense_log.jsonl`
+
+Folders are created automatically and gitignored.
+
+## API Routes (Implemented)
 
 - `GET /`: frontend dashboard
 - `GET /health`: health check
-- `GET /api/status`: complete FSM snapshot for UI
-- `GET /api/users`: list registered users
-- `POST /api/start-monitoring`: enter distance monitoring
-- `POST /api/distance`: update detected/simulated distance (`distance_m`)
-- `POST /api/recognition`: choose branch (`match_type`: `new` or `existing`, optional `user_id`)
-- `POST /api/register`: save new user profile + face image
-- `POST /api/stop-advice`: stop spoken advice and complete session
-- `POST /api/reset`: manual reset to start state
+- `GET /api/status`: full FSM snapshot for UI
+- `GET /api/users`: list users
+- `POST /api/start-monitoring`: begin monitoring phase
+- `POST /api/distance`: update distance (`distance_m`)
+- `POST /api/recognition`: submit local recognition branch (`new` or `existing`)
+- `POST /api/recognition/local`: alias for local recognition submission
+- `POST /api/register`: save user + photo
+- `POST /api/med/dispense`: append dispense log payload
+- `POST /api/advice/gemini`: return structured advice payload
+- `POST /api/stop-advice`: stop speaking flow
+- `POST /api/reset`: reset FSM
 
-## Integration Placeholders To Replace Later
+## Integration Placeholders
 
 In `pill_dispenser_fsm.py`:
 
-- `dispense_pill(profile)` for ESP32 + motor control
-- `generate_health_advice(profile)` for Gemini API + context (weather/conditions)
-- `speak_advice(advice_text)` and `stop_speaking()` for speaker/TTS control
+- `_dispense_pill(profile)`: replace simulation with real UART command to ESP32
+- `_send_uart_dispense_command(...)`: connect to actual serial port/protocol
+- `_generate_health_advice(profile)`: replace local fallback with Gemini-backed flow if needed
