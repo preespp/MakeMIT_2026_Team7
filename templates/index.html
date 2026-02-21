@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Smart Pill Dispenser</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel hero">
+        <p class="kicker">MakeMIT 2026</p>
+        <h1>Smart Home Pill Dispenser</h1>
+        <p class="subhead">Web workflow for distance, recognition, registration, dispense, and advice.</p>
+        <div class="hero-meta">
+          <span class="label">State</span>
+          <span id="stateBadge" class="badge">LOADING</span>
+          <button id="resetBtn" class="btn ghost">Reset</button>
+        </div>
+        <p id="message" class="message">Connecting...</p>
+        <p id="lastError" class="error-text"></p>
+      </section>
+
+      <section class="layout">
+        <article class="panel flow-panel">
+          <section id="startView" class="view">
+            <h2>Start Screen</h2>
+            <p>System waits here until distance monitoring begins.</p>
+            <button id="startBtn" class="btn primary">Start Monitoring</button>
+          </section>
+
+          <section id="monitorView" class="view hidden">
+            <h2>Distance Monitoring</h2>
+            <p>Keep camera feed active until the user is close enough.</p>
+            <form id="distanceForm" class="stack-row">
+              <label for="distanceInput">Simulated distance (meters)</label>
+              <input id="distanceInput" type="range" min="0.2" max="4" step="0.05" value="2.5" />
+              <p class="inline-note">Current input: <span id="distanceInputValue">2.50</span>m</p>
+              <button id="distanceBtn" type="submit" class="btn primary">Update Distance</button>
+            </form>
+          </section>
+
+          <section id="recognitionView" class="view hidden">
+            <h2>Face Recognition Branch</h2>
+            <p>Select whether this is a new or existing user.</p>
+            <div class="controls">
+              <button id="newUserBtn" class="btn primary">New User</button>
+            </div>
+            <div class="existing-box">
+              <label for="existingUserSelect">Existing user</label>
+              <select id="existingUserSelect"></select>
+              <button id="existingUserBtn" class="btn">Continue as Existing User</button>
+            </div>
+          </section>
+
+          <section id="registerView" class="view hidden">
+            <h2>New User Registration</h2>
+            <p>Fill details and capture/upload a face photo to save locally.</p>
+            <form id="registerForm" class="form-grid">
+              <label for="nameInput">Name</label>
+              <input id="nameInput" name="name" type="text" required />
+
+              <label for="ageInput">Age</label>
+              <input id="ageInput" name="age" type="number" min="0" />
+
+              <label for="medicationInput">Medication</label>
+              <input id="medicationInput" name="medication" type="text" required />
+
+              <label for="dosageInput">Dosage</label>
+              <input id="dosageInput" name="dosage" type="text" placeholder="e.g. 1 tablet after breakfast" />
+
+              <label for="notesInput">Notes</label>
+              <textarea id="notesInput" name="notes" rows="3"></textarea>
+
+              <div class="photo-tools">
+                <button id="captureBtn" type="button" class="btn">Capture from Camera</button>
+                <label class="upload-label" for="photoFile">or Upload Image</label>
+                <input id="photoFile" type="file" accept="image/*" />
+                <p id="photoStatus" class="inline-note">No photo selected.</p>
+              </div>
+
+              <img id="capturePreview" class="capture-preview hidden" alt="Captured face preview" />
+              <button id="registerBtn" type="submit" class="btn primary">Save User Locally</button>
+            </form>
+          </section>
+
+          <section id="speakingView" class="view hidden">
+            <h2>Advice Playback</h2>
+            <p id="activeUserLine" class="inline-note"></p>
+            <p id="adviceText" class="advice-box"></p>
+            <p class="inline-note">Speech remaining: <span id="speechRemaining">--</span>s</p>
+            <button id="stopAdviceBtn" class="btn warning">Stop Advice</button>
+          </section>
+
+          <section id="successView" class="view hidden">
+            <h2 id="successTitle">Success</h2>
+            <p id="successText">Completed.</p>
+            <p class="inline-note">Returning to start in <span id="autoReturn">--</span>s.</p>
+          </section>
+
+          <section id="errorView" class="view hidden">
+            <h2>Error State</h2>
+            <p>Please reset to recover.</p>
+          </section>
+        </article>
+
+        <aside class="panel side-panel">
+          <h2>Live Camera</h2>
+          <section id="cameraPanel" class="camera-box hidden">
+            <video id="liveVideo" autoplay muted playsinline></video>
+            <p id="cameraNote" class="inline-note">Camera not active.</p>
+          </section>
+          <section>
+            <h3>Session Details</h3>
+            <div class="status-row">
+              <span class="label">Threshold</span>
+              <span id="thresholdVal">--</span>
+            </div>
+            <div class="status-row">
+              <span class="label">Current distance</span>
+              <span id="distanceVal">--</span>
+            </div>
+          </section>
+          <section>
+            <h3>Transition History</h3>
+            <ul id="historyList" class="history"></ul>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  </body>
+</html>
