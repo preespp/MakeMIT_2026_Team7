@@ -6,6 +6,29 @@ app = Flask(__name__)
 fsm = PillDispenserFSM()
 
 
+def _handle_local_recognition(payload: dict) -> dict:
+    match_type = str(payload.get("match_type", "")).strip().lower()
+    user_id = payload.get("user_id")
+    if user_id is not None:
+        user_id = str(user_id)
+    if not match_type:
+        match_type = "existing" if user_id else "new"
+    source = str(payload.get("source", "REALSENSE_LOCAL"))
+    raw_confidence = payload.get("confidence")
+    confidence = None
+    if raw_confidence is not None:
+        try:
+            confidence = float(raw_confidence)
+        except (TypeError, ValueError):
+            confidence = None
+    return fsm.set_recognition_result(
+        match_type=match_type,
+        user_id=user_id,
+        source=source,
+        confidence=confidence,
+    )
+
+
 @app.get("/")
 def home():
     return render_template("index.html")
@@ -44,13 +67,12 @@ def api_distance():
 
 
 @app.post("/api/recognition")
+@app.post("/api/recognition/local")
 def api_recognition():
     payload = request.get_json(silent=True) or {}
-    match_type = str(payload.get("match_type", ""))
-    user_id = payload.get("user_id")
-    if user_id is not None:
-        user_id = str(user_id)
-    return jsonify(fsm.set_recognition_result(match_type=match_type, user_id=user_id))
+    if not isinstance(payload, dict):
+        return jsonify(fsm.status() | {"ok": False, "message": "Request JSON must be an object."}), 400
+    return jsonify(_handle_local_recognition(payload))
 
 
 @app.post("/api/register")
@@ -64,6 +86,22 @@ def api_register():
 @app.post("/api/stop-advice")
 def api_stop_advice():
     return jsonify(fsm.stop_advice())
+
+
+@app.post("/api/med/dispense")
+def api_med_dispense():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(fsm.status() | {"ok": False, "message": "Request JSON must be an object."}), 400
+    return jsonify(fsm.record_dispense(payload))
+
+
+@app.post("/api/advice/gemini")
+def api_advice_gemini():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(fsm.status() | {"ok": False, "message": "Request JSON must be an object."}), 400
+    return jsonify(fsm.get_advice_payload(payload))
 
 
 @app.post("/api/reset")

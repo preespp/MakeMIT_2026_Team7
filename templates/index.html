@@ -11,10 +11,12 @@
       <section class="panel hero">
         <p class="kicker">MakeMIT 2026</p>
         <h1>Smart Home Pill Dispenser</h1>
-        <p class="subhead">Web workflow for distance, recognition, registration, dispense, and advice.</p>
+        <p class="subhead">Jetson-local RealSense recognition, ESP32 over USB-UART, external motor battery.</p>
         <div class="hero-meta">
           <span class="label">State</span>
           <span id="stateBadge" class="badge">LOADING</span>
+          <span class="label">Phase</span>
+          <span id="phaseBadge" class="badge">LOADING</span>
           <button id="resetBtn" class="btn ghost">Reset</button>
         </div>
         <p id="message" class="message">Connecting...</p>
@@ -31,7 +33,7 @@
 
           <section id="monitorView" class="view hidden">
             <h2>Distance Monitoring</h2>
-            <p>Keep camera feed active until the user is close enough.</p>
+            <p>RealSense depth monitor (simulated): keep camera feed active until user is close enough.</p>
             <form id="distanceForm" class="stack-row">
               <label for="distanceInput">Simulated distance (meters)</label>
               <input id="distanceInput" type="range" min="0.2" max="4" step="0.05" value="2.5" />
@@ -41,15 +43,15 @@
           </section>
 
           <section id="recognitionView" class="view hidden">
-            <h2>Face Recognition Branch</h2>
-            <p>Select whether this is a new or existing user.</p>
+            <h2>Local Face Recognition</h2>
+            <p>This screen simulates Jetson local RealSense recognition output.</p>
             <div class="controls">
-              <button id="newUserBtn" class="btn primary">New User</button>
+              <button id="newUserBtn" class="btn primary">Simulate New User</button>
             </div>
             <div class="existing-box">
               <label for="existingUserSelect">Existing user</label>
               <select id="existingUserSelect"></select>
-              <button id="existingUserBtn" class="btn">Continue as Existing User</button>
+              <button id="existingUserBtn" class="btn">Simulate Existing User Match</button>
             </div>
           </section>
 
@@ -68,6 +70,9 @@
 
               <label for="dosageInput">Dosage</label>
               <input id="dosageInput" name="dosage" type="text" placeholder="e.g. 1 tablet after breakfast" />
+
+              <label for="servoChannelInput">Servo Channel (1-4)</label>
+              <input id="servoChannelInput" name="servo_channel" type="number" min="1" max="4" value="1" />
 
               <label for="notesInput">Notes</label>
               <textarea id="notesInput" name="notes" rows="3"></textarea>
@@ -108,10 +113,18 @@
           <h2>Live Camera</h2>
           <section id="cameraPanel" class="camera-box hidden">
             <video id="liveVideo" autoplay muted playsinline></video>
-            <p id="cameraNote" class="inline-note">Camera not active.</p>
+            <p id="cameraNote" class="inline-note">Camera not active. Browser camera is demo-only for local RealSense pipeline.</p>
           </section>
           <section>
             <h3>Session Details</h3>
+            <div class="status-row">
+              <span class="label">Compute</span>
+              <span id="computeVal">--</span>
+            </div>
+            <div class="status-row">
+              <span class="label">Camera</span>
+              <span id="cameraVal">--</span>
+            </div>
             <div class="status-row">
               <span class="label">Threshold</span>
               <span id="thresholdVal">--</span>
@@ -119,6 +132,18 @@
             <div class="status-row">
               <span class="label">Current distance</span>
               <span id="distanceVal">--</span>
+            </div>
+            <div class="status-row">
+              <span class="label">Last recognition</span>
+              <span id="recognitionVal">--</span>
+            </div>
+            <div class="status-row">
+              <span class="label">UART</span>
+              <span id="uartVal">--</span>
+            </div>
+            <div class="status-row">
+              <span class="label">Motor power</span>
+              <span id="motorPowerVal">--</span>
             </div>
           </section>
           <section>

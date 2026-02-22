@@ -1,4 +1,5 @@
 const stateBadge = document.getElementById("stateBadge");
+const phaseBadge = document.getElementById("phaseBadge");
 const messageLine = document.getElementById("message");
 const lastError = document.getElementById("lastError");
 const historyList = document.getElementById("historyList");
@@ -25,6 +26,11 @@ const stopAdviceBtn = document.getElementById("stopAdviceBtn");
 
 const thresholdVal = document.getElementById("thresholdVal");
 const distanceVal = document.getElementById("distanceVal");
+const computeVal = document.getElementById("computeVal");
+const cameraVal = document.getElementById("cameraVal");
+const recognitionVal = document.getElementById("recognitionVal");
+const uartVal = document.getElementById("uartVal");
+const motorPowerVal = document.getElementById("motorPowerVal");
 const activeUserLine = document.getElementById("activeUserLine");
 const adviceText = document.getElementById("adviceText");
 const speechRemaining = document.getElementById("speechRemaining");
@@ -113,7 +119,8 @@ function syncExistingUsers(users) {
   for (const user of list) {
     const opt = document.createElement("option");
     opt.value = user.id;
-    opt.textContent = `${user.name} (${user.id})`;
+    const channel = user.servo_channel || "-";
+    opt.textContent = `${user.name} (${user.id}) | CH${channel}`;
     existingUserSelect.appendChild(opt);
   }
 
@@ -165,6 +172,8 @@ function stateNeedsCamera(state) {
 async function renderStatus(data) {
   stateBadge.textContent = data.state;
   stateBadge.classList.toggle("error", data.state === "ERROR");
+  phaseBadge.textContent = data.phase || "--";
+  phaseBadge.classList.toggle("error", data.state === "ERROR");
 
   messageLine.textContent = data.message || "Ready.";
   lastError.textContent = data.last_error ? `Last error: ${data.last_error}` : "";
@@ -174,12 +183,24 @@ async function renderStatus(data) {
     data.current_distance_m === null || data.current_distance_m === undefined
       ? "--"
       : `${Number(data.current_distance_m).toFixed(2)}m`;
+  computeVal.textContent = data.compute_node || "--";
+  cameraVal.textContent = data.camera_source || "--";
+  const rec = data.last_recognition || {};
+  if (rec.match_type) {
+    const recUser = rec.user_id ? `:${rec.user_id}` : "";
+    const recConf = rec.confidence === null || rec.confidence === undefined ? "" : ` @${rec.confidence}`;
+    recognitionVal.textContent = `${String(rec.source || "LOCAL")} ${String(rec.match_type).toUpperCase()}${recUser}${recConf}`;
+  } else {
+    recognitionVal.textContent = "--";
+  }
+  uartVal.textContent = `${data.uart_transport || "--"} ${data.uart_port || ""}@${data.uart_baud || ""}`.trim();
+  motorPowerVal.textContent = data.motor_power_domain || "--";
 
   const activeUser = data.active_user;
   if (activeUser) {
     activeUserLine.textContent = `User: ${activeUser.name || "Unknown"} | Medication: ${
       activeUser.medication || "n/a"
-    }`;
+    } | Channel: ${activeUser.servo_channel || "n/a"}`;
   } else {
     activeUserLine.textContent = "";
   }
@@ -232,7 +253,9 @@ async function renderStatus(data) {
       successText.textContent = "User saved to local JSON + JPG. Returning to start screen soon.";
     } else if (data.state === "DISPENSING_PILL") {
       successTitle.textContent = "Dispensing Pill";
-      successText.textContent = "Dispense logic is running (ESP32 integration placeholder).";
+      const uartResult = data.last_uart_result || {};
+      const status = uartResult.status || "PENDING";
+      successText.textContent = `Dispense command sent over USB-UART to ESP32. Status: ${status}.`;
     } else if (data.state === "GENERATING_ADVICE") {
       successTitle.textContent = "Generating Advice";
       successText.textContent = "Gemini advice is being prepared (placeholder).";
@@ -267,15 +290,23 @@ async function runAction(url, body = null) {
 startBtn.addEventListener("click", () => runAction("/api/start-monitoring"));
 resetBtn.addEventListener("click", () => runAction("/api/reset"));
 
-newUserBtn.addEventListener("click", () => runAction("/api/recognition", { match_type: "new" }));
+newUserBtn.addEventListener("click", () =>
+  runAction("/api/recognition/local", {
+    match_type: "new",
+    source: "REALSENSE_LOCAL",
+    confidence: 0.2,
+  })
+);
 existingUserBtn.addEventListener("click", () => {
   if (!existingUserSelect.value) {
     messageLine.textContent = "Select an existing user first.";
     return;
   }
-  runAction("/api/recognition", {
+  runAction("/api/recognition/local", {
     match_type: "existing",
     user_id: existingUserSelect.value,
+    source: "REALSENSE_LOCAL",
+    confidence: 0.92,
   });
 });
 
@@ -339,6 +370,7 @@ registerForm.addEventListener("submit", (event) => {
     age: document.getElementById("ageInput").value.trim(),
     medication: document.getElementById("medicationInput").value.trim(),
     dosage: document.getElementById("dosageInput").value.trim(),
+    servo_channel: Number(document.getElementById("servoChannelInput").value || 1),
     notes: document.getElementById("notesInput").value.trim(),
     photo_data_url: photoDataUrl,
   };

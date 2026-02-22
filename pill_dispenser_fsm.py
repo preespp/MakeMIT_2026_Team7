@@ -47,16 +47,29 @@ class PillDispenserFSM:
         self._current_distance_m: float | None = None
         self._active_user_id = ""
         self._active_user_profile: dict[str, Any] = {}
+        self._last_recognition: dict[str, Any] = {}
+        self._last_uart_command: dict[str, Any] = {}
+        self._last_uart_result: dict[str, Any] = {}
         self._advice_text = ""
         self._is_speaking = False
         self._speech_ends_at: datetime | None = None
         self._auto_return_at: datetime | None = None
 
+        self._compute_node = "JETSON_LOCAL"
+        self._camera_source = "REALSENSE_LOCAL"
+        self._uart_transport = "USB_UART"
+        self._uart_port = "/dev/ttyUSB0"
+        self._uart_baud = 115200
+        self._motor_power = "EXTERNAL_BATTERY"
+
         self._base_dir = Path(__file__).resolve().parent
         self._users_dir = self._base_dir / "data" / "users"
         self._faces_dir = self._base_dir / "data" / "faces"
+        self._logs_dir = self._base_dir / "data" / "logs"
         self._users_dir.mkdir(parents=True, exist_ok=True)
         self._faces_dir.mkdir(parents=True, exist_ok=True)
+        self._logs_dir.mkdir(parents=True, exist_ok=True)
+        self._dispense_log_file = self._logs_dir / "dispense_log.jsonl"
 
         self._record_event("INIT", self._state.value, "FSM initialized.")
 
@@ -102,11 +115,11 @@ class PillDispenserFSM:
             if self._current_distance_m <= self._distance_threshold_m:
                 self._transition(
                     WorkflowState.FACE_RECOGNITION,
-                    f"User reached {self._current_distance_m}m. Running face recognition.",
+                    f"User reached {self._current_distance_m}m. Running local RealSense face recognition.",
                 )
                 return self._response(
                     True,
-                    "User is close enough. Choose whether this is a new or existing user.",
+                    "User is close enough. Submit local recognition result (new or existing).",
                 )
 
             remaining = round(self._current_distance_m - self._distance_threshold_m, 2)
@@ -115,7 +128,13 @@ class PillDispenserFSM:
                 f"User detected at {self._current_distance_m}m. Move {remaining}m closer.",
             )
 
-    def set_recognition_result(self, match_type: str, user_id: str | None = None) -> dict:
+    def set_recognition_result(
+        self,
+        match_type: str,
+        user_id: str | None = None,
+        source: str = "REALSENSE_LOCAL",
+        confidence: float | None = None,
+    ) -> dict:
         with self._lock:
             self._maybe_auto_progress()
             if self._state != WorkflowState.FACE_RECOGNITION:
@@ -125,14 +144,28 @@ class PillDispenserFSM:
                 )
 
             normalized = (match_type or "").strip().lower()
+            safe_source = self._clean_text(source).upper() or "REALSENSE_LOCAL"
+            normalized_confidence: float | None = None
+            if confidence is not None:
+                try:
+                    normalized_confidence = round(float(confidence), 4)
+                except (TypeError, ValueError):
+                    normalized_confidence = None
+
             if normalized == "new":
+                self._last_recognition = {
+                    "match_type": "new",
+                    "user_id": "",
+                    "source": safe_source,
+                    "confidence": normalized_confidence,
+                }
                 self._transition(
                     WorkflowState.REGISTER_NEW_USER,
-                    "Face not found. Switching to new user registration.",
+                    "Local face recognition did not match. Switching to new user registration.",
                 )
                 return self._response(
                     True,
-                    "New user selected. Fill in details and capture a face photo.",
+                    "New user path selected from local recognition. Fill in details and capture a face photo.",
                 )
 
             if normalized != "existing":
@@ -151,13 +184,32 @@ class PillDispenserFSM:
 
             self._active_user_id = resolved_user_id
             self._active_user_profile = profile
+            self._last_recognition = {
+                "match_type": "existing",
+                "user_id": resolved_user_id,
+                "source": safe_source,
+                "confidence": normalized_confidence,
+            }
             self._transition(
                 WorkflowState.DISPENSING_PILL,
-                f"Recognized existing user: {profile.get('name', resolved_user_id)}.",
+                f"Local recognition matched existing user: {profile.get('name', resolved_user_id)}.",
             )
 
             if not self._dispense_pill(profile):
+                self._append_dispense_log(
+                    user_id=resolved_user_id,
+                    medication=str(profile.get("medication", "")),
+                    result="FAILED",
+                    details=f"uart={self._uart_transport} status={self._last_uart_result.get('status', 'UNKNOWN')}",
+                )
                 return self._to_error("Failed to dispense pill for existing user.")
+
+            self._append_dispense_log(
+                user_id=resolved_user_id,
+                medication=str(profile.get("medication", "")),
+                result="SUCCESS",
+                details=f"uart={self._uart_transport} status={self._last_uart_result.get('status', 'UNKNOWN')}",
+            )
 
             self._transition(
                 WorkflowState.GENERATING_ADVICE,
@@ -176,7 +228,7 @@ class PillDispenserFSM:
             )
             return self._response(
                 True,
-                "Existing user recognized, pill dispensed, and health advice speaking.",
+                "Existing user recognized locally, pill dispensed over ESP32 path, and health advice speaking.",
             )
 
     def register_new_user(self, payload: dict[str, Any]) -> dict:
@@ -193,6 +245,7 @@ class PillDispenserFSM:
             dosage = self._clean_text(payload.get("dosage"))
             notes = self._clean_text(payload.get("notes"))
             age = self._clean_text(payload.get("age"))
+            servo_channel = self._parse_servo_channel(payload.get("servo_channel"), default=1)
             photo_data_url = payload.get("photo_data_url", "")
 
             if not name:
@@ -217,6 +270,7 @@ class PillDispenserFSM:
                 "age": age,
                 "medication": medication,
                 "dosage": dosage,
+                "servo_channel": servo_channel,
                 "notes": notes,
                 "image_path": str(face_file.relative_to(self._base_dir)),
                 "created_at": self._now().isoformat(),
@@ -267,19 +321,76 @@ class PillDispenserFSM:
             self._transition(WorkflowState.WAITING_FOR_USER, "Manual reset.")
             return self._response(True, "Reset to initial start screen.")
 
+    def record_dispense(self, payload: dict[str, Any]) -> dict:
+        with self._lock:
+            self._maybe_auto_progress()
+            profile = self._resolve_profile_for_api(payload.get("user_id"))
+            if not profile:
+                return self._response(False, "User profile not found for dispense logging.")
+
+            medication = self._clean_text(payload.get("medication")) or str(
+                profile.get("medication", "")
+            )
+            result = self._clean_text(payload.get("result")) or "SUCCESS"
+            details = self._clean_text(payload.get("details")) or "manual dispense endpoint"
+
+            self._append_dispense_log(
+                user_id=str(profile.get("id", "")),
+                medication=medication,
+                result=result,
+                details=details,
+            )
+            return self._response(True, "Dispense event logged.")
+
+    def get_advice_payload(self, payload: dict[str, Any]) -> dict:
+        with self._lock:
+            self._maybe_auto_progress()
+            profile = self._resolve_profile_for_api(payload.get("user_id"))
+            if not profile:
+                return self._response(False, "User profile not found for advice generation.")
+
+            advice_payload = self._build_local_advice_payload(profile)
+            response = self._response(True, "Advice payload generated.")
+            response["advice_payload"] = advice_payload
+            return response
+
     # Integration placeholders
     def _dispense_pill(self, profile: dict[str, Any]) -> bool:
-        # TODO: call ESP32 and motor control module with this user's med info.
-        _ = profile
-        return True
+        user_id = str(profile.get("id", self._active_user_id))
+        channel = self._parse_servo_channel(profile.get("servo_channel"), default=1)
+        dose = self._clean_text(profile.get("dosage")) or "1 unit"
+        medication = self._clean_text(profile.get("medication")) or "unknown_medication"
+        request_id = f"disp-{self._now().strftime('%Y%m%d%H%M%S')}"
+
+        command = {
+            "cmd": "DISPENSE",
+            "request_id": request_id,
+            "user_id": user_id,
+            "channel": channel,
+            "dose": dose,
+            "medication": medication,
+            "transport": self._uart_transport,
+            "port": self._uart_port,
+            "baud": self._uart_baud,
+        }
+        self._last_uart_command = command
+
+        # TODO: replace simulation with real pyserial UART exchange with ESP32 firmware.
+        response = self._send_uart_dispense_command(command)
+        self._last_uart_result = response
+        return bool(response.get("ack", False))
 
     def _generate_health_advice(self, profile: dict[str, Any]) -> str:
-        # TODO: call Gemini API with weather/context and patient details.
-        medication = profile.get("medication", "your medication")
-        name = profile.get("name", "there")
+        # Lightweight default: local rule-based advice payload for hackathon speed.
+        # Later, backend can replace this with Gemini JSON and keep the same UI contract.
+        payload = self._build_local_advice_payload(profile)
+        name = str(profile.get("name", "there"))
+        medication = payload.get("medication", "your medication")
+        effects = ", ".join(payload.get("side_effects", []))
+        advice = payload.get("advice", "")
         return (
-            f"Hi {name}. You just received {medication}. Stay hydrated today, "
-            "avoid skipping meals, and rest if you feel dizzy."
+            f"Hi {name}. You just received {medication}. "
+            f"Common side effects: {effects}. {advice}"
         )
 
     def _speak_advice(self, advice_text: str) -> bool:
@@ -292,6 +403,100 @@ class PillDispenserFSM:
         return
 
     # Internal helpers
+    def _send_uart_dispense_command(self, command: dict[str, Any]) -> dict[str, Any]:
+        # Placeholder UART path for now: returns a simulated ACK contract.
+        return {
+            "ack": True,
+            "request_id": command.get("request_id", ""),
+            "status": "OK",
+            "transport": self._uart_transport,
+            "port": self._uart_port,
+            "baud": self._uart_baud,
+            "power_domain": self._motor_power,
+        }
+
+    def _phase_for_state(self, state: WorkflowState) -> str:
+        if state == WorkflowState.WAITING_FOR_USER:
+            return "IDLE"
+        if state in {
+            WorkflowState.MONITORING_DISTANCE,
+            WorkflowState.FACE_RECOGNITION,
+            WorkflowState.REGISTER_NEW_USER,
+        }:
+            return "AUTHENTICATION"
+        if state == WorkflowState.DISPENSING_PILL:
+            return "DISPENSING"
+        if state in {
+            WorkflowState.GENERATING_ADVICE,
+            WorkflowState.SPEAKING_ADVICE,
+            WorkflowState.SESSION_SUCCESS,
+            WorkflowState.REGISTRATION_SUCCESS,
+        }:
+            return "ADVICE_COMPLETION"
+        return "FAULT"
+
+    def _parse_servo_channel(self, value: Any, default: int) -> int:
+        try:
+            channel = int(value)
+        except (TypeError, ValueError):
+            return default
+        if channel < 1:
+            return 1
+        if channel > 4:
+            return 4
+        return channel
+
+    def _resolve_profile_for_api(self, user_id: Any) -> dict[str, Any] | None:
+        safe_user_id = self._safe_user_id(str(user_id or ""))
+        if safe_user_id:
+            return self._load_user_profile(safe_user_id)
+        if self._active_user_profile:
+            return self._active_user_profile
+        known = self._list_known_users()
+        if not known:
+            return None
+        return self._load_user_profile(known[0]["id"])
+
+    def _build_local_advice_payload(self, profile: dict[str, Any]) -> dict[str, Any]:
+        medication = str(profile.get("medication", "your medication")).strip()
+        med_lower = medication.lower()
+
+        side_effects = ["drowsiness", "stomach discomfort", "mild headache"]
+        advice = "Drink more water and avoid intense activity if you feel unwell."
+
+        if "ibuprofen" in med_lower:
+            side_effects = ["stomach discomfort", "nausea", "dizziness"]
+            advice = "Take with food and avoid alcohol today."
+        elif "loratadine" in med_lower:
+            side_effects = ["dry mouth", "mild drowsiness", "headache"]
+            advice = "Avoid driving if you feel sleepy and stay hydrated."
+        elif "amoxicillin" in med_lower:
+            side_effects = ["stomach upset", "diarrhea", "skin rash"]
+            advice = "Finish the full course and contact a doctor if rash worsens."
+
+        return {
+            "medication": medication,
+            "side_effects": side_effects[:3],
+            "advice": advice,
+            "source": "local_rule_engine",
+        }
+
+    def _append_dispense_log(
+        self, user_id: str, medication: str, result: str, details: str
+    ) -> None:
+        entry = {
+            "timestamp": self._now().isoformat(),
+            "user_id": self._safe_user_id(user_id),
+            "medication": self._clean_text(medication),
+            "result": self._clean_text(result).upper(),
+            "details": self._clean_text(details),
+        }
+        if not entry["user_id"]:
+            return
+        serialized = json.dumps(entry, ensure_ascii=True)
+        with self._dispense_log_file.open("a", encoding="utf-8") as fh:
+            fh.write(serialized + "\n")
+
     def _to_error(self, message: str) -> dict:
         self._last_error = message
         self._is_speaking = False
@@ -373,6 +578,7 @@ class PillDispenserFSM:
                     "id": user_id,
                     "name": str(data.get("name", user_id)),
                     "medication": str(data.get("medication", "")),
+                    "servo_channel": str(data.get("servo_channel", "")),
                 }
             )
         return users
@@ -414,6 +620,9 @@ class PillDispenserFSM:
         self._current_distance_m = None
         self._active_user_id = ""
         self._active_user_profile = {}
+        self._last_recognition = {}
+        self._last_uart_command = {}
+        self._last_uart_result = {}
         self._advice_text = ""
         self._is_speaking = False
         self._speech_ends_at = None
@@ -450,13 +659,24 @@ class PillDispenserFSM:
                 "id": self._active_user_profile.get("id", self._active_user_id),
                 "name": self._active_user_profile.get("name", ""),
                 "medication": self._active_user_profile.get("medication", ""),
+                "servo_channel": self._active_user_profile.get("servo_channel", ""),
             }
         return {
             "state": self._state.value,
+            "phase": self._phase_for_state(self._state),
             "last_error": self._last_error,
             "distance_threshold_m": self._distance_threshold_m,
             "current_distance_m": self._current_distance_m,
             "active_user": active_user,
+            "last_recognition": self._last_recognition,
+            "uart_transport": self._uart_transport,
+            "uart_port": self._uart_port,
+            "uart_baud": self._uart_baud,
+            "motor_power_domain": self._motor_power,
+            "compute_node": self._compute_node,
+            "camera_source": self._camera_source,
+            "last_uart_command": self._last_uart_command,
+            "last_uart_result": self._last_uart_result,
             "advice_text": self._advice_text,
             "is_speaking": self._is_speaking,
             "speech_seconds_remaining": self._seconds_until(self._speech_ends_at, now),
