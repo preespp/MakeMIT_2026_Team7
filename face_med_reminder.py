@@ -6,14 +6,15 @@ Designed for Jetson Orin Nano + RealSense D435i.
 
 Requirements:
   pip install pyrealsense2 opencv-python numpy insightface onnxruntime
-  # On Jetson with GPU:  pip install onnxruntime-gpu
+  # On Jetson (aarch64) with GPU:
+  #   pip install --extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126 onnxruntime-gpu
 
 Usage:
   python face_med_reminder.py
 
 Detection distance: 65cm (configurable)
 Max users: 10
-Storage: users.json
+Storage: data/users.json
 
 Architecture:
   - SCRFD for face detection (fast, accurate)
@@ -37,7 +38,7 @@ from insightface.app import FaceAnalysis
 
 # ======================= Configuration =======================
 
-USERS_JSON = "users.json"
+USERS_JSON = os.path.join("data", "users.json")
 MAX_USERS = 10
 DETECTION_DISTANCE_M = 0.65       # 65cm
 
@@ -68,6 +69,7 @@ def load_users():
 
 
 def save_users(data):
+    os.makedirs(os.path.dirname(USERS_JSON), exist_ok=True)
     with open(USERS_JSON, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -81,18 +83,30 @@ def find_matching_user(embedding, data):
         return None, -1, 0.0
 
     query = np.array(embedding, dtype=np.float32).flatten()
+    if query.size == 0:
+        return None, -1, 0.0
     query /= (np.linalg.norm(query) + 1e-8)
 
     best_score = -1.0
     best_idx = -1
 
     for i, u in enumerate(data["users"]):
-        stored = np.array(u["face_encoding"], dtype=np.float32).flatten()
+        raw_encoding = u.get("face_encoding")
+        if raw_encoding is None:
+            continue
+
+        stored = np.array(raw_encoding, dtype=np.float32).flatten()
+        # Skip incompatible/legacy encodings (e.g., older 128-d vectors).
+        if stored.size != query.size or stored.size == 0:
+            continue
         stored /= (np.linalg.norm(stored) + 1e-8)
         score = float(np.dot(query, stored))
         if score > best_score:
             best_score = score
             best_idx = i
+
+    if best_idx == -1:
+        return None, -1, 0.0
 
     if best_score >= MATCH_THRESHOLD:
         return data["users"][best_idx], best_idx, best_score
