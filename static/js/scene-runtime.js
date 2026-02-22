@@ -35,6 +35,39 @@
   let realsenseSnapshotTimer = null;
   let adviceAutoStopTimer = null;
 
+  function enableTouchScrollSupport() {
+    try {
+      if (!document.getElementById("sauron-touch-scroll-fix")) {
+        const style = document.createElement("style");
+        style.id = "sauron-touch-scroll-fix";
+        style.textContent = [
+          "html, body {",
+          "  touch-action: pan-y pinch-zoom;",
+          "  overscroll-behavior-y: auto;",
+          "}",
+          "body {",
+          "  -webkit-overflow-scrolling: touch;",
+          "}",
+          "#app-root {",
+          "  touch-action: pan-y pinch-zoom;",
+          "}",
+        ].join("\\n");
+        (document.head || document.documentElement).appendChild(style);
+      }
+
+      const root = document.getElementById("app-root");
+      if (root) {
+        // Many scene templates ship with `overflow-hidden`; allow vertical finger scrolling
+        // while preserving horizontal clipping for decorative elements.
+        root.style.overflowX = "hidden";
+        root.style.overflowY = "auto";
+        root.style.webkitOverflowScrolling = "touch";
+      }
+    } catch (_err) {
+      // Non-fatal: keep runtime running even if style injection fails.
+    }
+  }
+
   function currentSlug() {
     const parts = window.location.pathname.split("/").filter(Boolean);
     return (parts[parts.length - 1] || "idle").toLowerCase();
@@ -1253,6 +1286,17 @@
       const adviceText = adviceDataReady
         ? (String(payload.advice || status.advice_text || "").trim() || "Advice is being prepared.")
         : "Preparing personalized guidance...";
+      const structuredRenderKey = JSON.stringify({
+        ready: !!adviceDataReady,
+        effects: adviceDataReady ? (effects.length ? effects.join("; ") : "--") : "Analyzing medication side effects...",
+        advice: adviceText,
+        schedule: scheduleText,
+        weather: weatherTip,
+      });
+      if (structured.dataset.renderKey === structuredRenderKey) {
+        return;
+      }
+      structured.dataset.renderKey = structuredRenderKey;
       structured.innerHTML = [
         renderAdviceCardSection("Side Effects", adviceDataReady ? (effects.length ? effects.join("; ") : "--") : "Analyzing medication side effects...", "lucide:triangle-alert"),
         renderAdviceCardSection("Advice", adviceText, "lucide:message-circle-heart"),
@@ -1346,7 +1390,7 @@
     });
 
     bindClick("proceed-to-scan-link", async () => {
-      const threshold = Number(latestStatus?.distance_threshold_m || 1.2);
+      const threshold = Number(latestStatus?.distance_threshold_m || 0.7);
       await dispatchAction("/api/distance", { distance_m: Math.max(0.2, threshold - 0.05) });
     });
 
@@ -1649,5 +1693,6 @@
 
   ensureRuntimePanel();
   bindDebugTriggers();
+  enableTouchScrollSupport();
   startPolling();
 })();

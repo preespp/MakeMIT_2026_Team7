@@ -5,7 +5,7 @@ import time
 # UART port on Jetson (check with `ls /dev/ttyUSB*` or `dmesg`)
 UART_PORT = "/dev/ttyUSB0"
 BAUD_RATE = 115200
-DEFAULT_PROTOCOL = "frame"  # "frame" (SAURON_UART_V1) or "json" (legacy compatibility)
+DEFAULT_PROTOCOL = "json"  # "frame" (SAURON_UART_V1) or "json" (legacy compatibility)
 
 # Open serial port (timeout=None blocks until a full line is received)
 ser = serial.Serial(UART_PORT, BAUD_RATE, timeout=None)
@@ -74,12 +74,12 @@ def send_pill_command(pill_counts, protocol=DEFAULT_PROTOCOL):
 
 if __name__ == "__main__":
     # Example command: actuate servos 1-4
-    pill_cmd = {"Vitamin C": 2, "Fish Oil": 5, "Vitamin B": 0, "Tylenol": 3}
+    pill_cmd = {"Vitamin C": 2, "Fish Oil": 2, "Vitamin B": 2, "Tylenol": 3}
     response = send_pill_command(pill_cmd)
     print("Final response:", response)
 
     # You can loop and test multiple times
     time.sleep(10)
-    pill_cmd = {"Vitamin C": 1, "Fish Oil": 10, "Vitamin B": 2, "Tylenol": 1}
+    pill_cmd = {"Vitamin C": 1, "Fish Oil": 3, "Vitamin B": 2, "Tylenol": 1}
     response = send_pill_command(pill_cmd)
     print("Final response:", response)

@@ -303,7 +303,7 @@ function bindSceneInteractions(data) {
   });
 
   bindSceneClick(doc, "proceed-to-scan-link", () => {
-    const threshold = Number(data.distance_threshold_m || 1.2);
+    const threshold = Number(data.distance_threshold_m || 0.7);
     dispatchAction("/api/distance", { distance_m: Math.max(0.2, threshold - 0.05) });
   });
 

@@ -12,7 +12,7 @@ Requirements:
 Usage:
   python face_med_reminder.py
 
-Detection distance: 1.2m (configurable, aligned with FSM/UI)
+Detection distance: 0.7m (configurable, aligned with FSM/UI)
 Max users: 10
 Storage: canonical profiles in data/users/*.json + embeddings in data/embeddings/*.json
          (legacy cache data/users.json maintained for compatibility)
@@ -56,7 +56,7 @@ except Exception:  # pragma: no cover - Windows
 
 USERS_JSON = os.path.join("data", "users.json")  # legacy compatibility cache
 MAX_USERS = 10
-DETECTION_DISTANCE_M = 1.2        # aligned with FSM / frontend wake threshold (meters)
+DETECTION_DISTANCE_M = 0.7        # aligned with FSM / frontend wake threshold (meters)
 
 # --- Recognition thresholds (ArcFace cosine similarity) ---
 # Same person typically > 0.4, different person < 0.2
@@ -822,4 +822,3 @@ class MedReminderVision:
 
 if __name__ == "__main__":
     MedReminderVision().run()
-

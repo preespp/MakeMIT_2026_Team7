@@ -41,7 +41,7 @@ class PillDispenserFSM:
 
     def __init__(
         self,
-        distance_threshold_m: float = 1.2,
+        distance_threshold_m: float = 0.7,
         success_display_seconds: int = 8,
         speech_duration_seconds: int = 12,
         dispense_display_seconds: float = 4.0,

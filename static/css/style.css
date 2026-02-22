@@ -29,6 +29,12 @@ body {
   background-size: 260% 260%;
   animation: bg-flow 16s ease infinite;
   transition: background-color 0.5s ease;
+  touch-action: pan-y pinch-zoom;
+  -webkit-overflow-scrolling: touch;
+}
+
+html {
+  touch-action: pan-y pinch-zoom;
 }
 
 body.theme-idle {
@@ -203,6 +209,7 @@ body.immersive-mode .main-view-container {
   border: 0;
   display: block;
   background: #0c2044;
+  touch-action: pan-y pinch-zoom;
 }
 
 .main-view-container.scene-shell-active .view {
