@@ -1,41 +1,64 @@
 """
-Medication Reminder Robot - Face Recognition System
-====================================================
-Uses RealSense D435i for face detection + depth, and face_recognition library
-for identity matching.
+Medication Reminder Robot - InsightFace (ArcFace) Version
+==========================================================
+High-accuracy face recognition using InsightFace ONNX models.
+Designed for Jetson Orin Nano + RealSense D435i.
 
 Requirements:
-  pip install pyrealsense2 opencv-python numpy face-recognition
+  pip install pyrealsense2 opencv-python numpy insightface onnxruntime
+  # On Jetson with GPU:  pip install onnxruntime-gpu
 
 Usage:
   python face_med_reminder.py
 
-Flow:
-  1) Detect faces in RGB frame
-  2) If a face is within 20cm of camera, start recognition
-  3) Known user  → show medication reminder based on schedule
-  4) Unknown user → prompt to register (name, age, meds, schedule)
+Detection distance: 65cm (configurable)
+Max users: 10
+Storage: users.json
 
-User data is stored in users.json (max 10 users).
+Architecture:
+  - SCRFD for face detection (fast, accurate)
+  - ArcFace for 512-d face embedding (state-of-the-art accuracy)
+  - Cosine similarity matching with dual thresholds to avoid false pos/neg
+  - Multi-frame confirmation to prevent single-frame errors
 """
 
 import cv2
 import numpy as np
 import pyrealsense2 as rs
-import face_recognition
 import json
 import os
 import time
 from datetime import datetime
 
-# ============ Config ============
+os.environ["OMP_NUM_THREADS"] = "4"
+
+import insightface
+from insightface.app import FaceAnalysis
+
+# ======================= Configuration =======================
+
 USERS_JSON = "users.json"
 MAX_USERS = 10
-DETECTION_DISTANCE_M = 0.65  # 65 cm
-RECOGNITION_COOLDOWN_S = 5   # seconds between repeated reminders for same user
-FACE_MATCH_TOLERANCE = 0.45  # lower = stricter matching
+DETECTION_DISTANCE_M = 0.65       # 65cm
 
-# ============ User Data Management ============
+# --- Recognition thresholds (ArcFace cosine similarity) ---
+# Same person typically > 0.4, different person < 0.2
+MATCH_THRESHOLD = 0.35             # >= this = matched
+UNKNOWN_CEILING = 0.25             # <  this = definitely unknown
+# Between the two = uncertain -> do nothing, keep watching
+
+# --- Multi-frame confirmation ---
+CONFIRM_FRAMES_NEEDED = 3          # Need 3 consistent matches
+CONFIRM_WINDOW_FRAMES = 5          # Within last 5 frames
+UNKNOWN_CONFIRM_FRAMES = 5         # Need 5 "unknown" before registration
+
+RECOGNITION_COOLDOWN_S = 8
+REGISTER_COOLDOWN_S = 5
+
+# InsightFace model: "buffalo_s" (fast) or "buffalo_l" (more accurate)
+INSIGHTFACE_MODEL = "buffalo_s"
+
+# ======================= User Data =======================
 
 def load_users():
     if os.path.exists(USERS_JSON):
@@ -49,481 +72,422 @@ def save_users(data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def find_matching_user(face_encoding, data):
+def find_matching_user(embedding, data):
     """
-    Compare face_encoding against all stored users.
-    Returns (user_dict, index) or (None, -1).
+    Match embedding against stored users via cosine similarity.
+    Returns (user_dict, index, score) or (None, -1, best_score).
     """
     if not data["users"]:
-        return None, -1
+        return None, -1, 0.0
 
-    stored_encodings = []
-    for u in data["users"]:
-        stored_encodings.append(np.array(u["face_encoding"]))
+    query = np.array(embedding, dtype=np.float32).flatten()
+    query /= (np.linalg.norm(query) + 1e-8)
 
-    distances = face_recognition.face_distance(stored_encodings, face_encoding)
-    best_idx = int(np.argmin(distances))
-    best_dist = distances[best_idx]
+    best_score = -1.0
+    best_idx = -1
 
-    if best_dist < FACE_MATCH_TOLERANCE:
-        return data["users"][best_idx], best_idx
-    return None, -1
+    for i, u in enumerate(data["users"]):
+        stored = np.array(u["face_encoding"], dtype=np.float32).flatten()
+        stored /= (np.linalg.norm(stored) + 1e-8)
+        score = float(np.dot(query, stored))
+        if score > best_score:
+            best_score = score
+            best_idx = i
+
+    if best_score >= MATCH_THRESHOLD:
+        return data["users"][best_idx], best_idx, best_score
+    return None, -1, best_score
 
 
 def get_pending_meds(user):
-    """
-    Check user's medication schedule and return what they should take now.
-    Returns list of strings like ["8:00 - Aspirin", "12:00 - VitaminD"]
-    """
+    """Return medication reminders based on current time."""
     now = datetime.now()
-    current_hour = now.hour
-    current_min = now.minute
+    now_min = now.hour * 60 + now.minute
     reminders = []
 
     for med in user.get("medications", []):
-        med_name = med["name"]
         for t in med["times"]:
             parts = t.split(":")
             h, m = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
-            # Show meds that are due within +/- 30 min window
-            med_total_min = h * 60 + m
-            now_total_min = current_hour * 60 + current_min
-            diff = abs(med_total_min - now_total_min)
-            if diff <= 30:
-                reminders.append(f"{t} - {med_name} (NOW!)")
-            elif med_total_min > now_total_min:
-                reminders.append(f"{t} - {med_name} (upcoming)")
+            diff = (h * 60 + m) - now_min
+            if abs(diff) <= 30:
+                reminders.append(f"  >>> {t} - {med['name']}  [NOW!]")
+            elif 0 < diff <= 120:
+                reminders.append(f"  {t} - {med['name']}  (upcoming)")
 
     if not reminders:
-        # Show full schedule if nothing is due soon
+        reminders.append("  (No medication due soon)")
+        reminders.append("  Full schedule:")
         for med in user.get("medications", []):
             for t in med["times"]:
-                reminders.append(f"{t} - {med['name']}")
-
+                reminders.append(f"    {t} - {med['name']}")
     return reminders
 
 
-# ============ New User Registration (terminal-based) ============
+# ======================= Depth Helper =======================
 
-def register_new_user_terminal(face_encoding, face_image, data):
-    """
-    Interactive terminal-based registration for a new user.
-    """
-    if len(data["users"]) >= MAX_USERS:
-        print("\n[WARNING] Maximum 10 users reached! Cannot add more.")
-        return None
-
-    print("\n" + "=" * 50)
-    print("  NEW FACE DETECTED - CREATE NEW USER")
-    print("=" * 50)
-
-    name = input("  Name: ").strip()
-    if not name:
-        print("  Registration cancelled.")
-        return None
-
-    age = input("  Age: ").strip()
-
-    medications = []
-    print("  Enter medications (empty name to finish):")
-    while True:
-        med_name = input("    Medication name: ").strip()
-        if not med_name:
-            break
-        times_str = input("    Times (comma-separated, e.g. 8:00,12:00,20:00): ").strip()
-        times = [t.strip() for t in times_str.split(",") if t.strip()]
-        if times:
-            medications.append({"name": med_name, "times": times})
-
-    new_user = {
-        "name": name,
-        "age": age,
-        "medications": medications,
-        "face_encoding": face_encoding.tolist(),
-        "created": datetime.now().isoformat(),
-    }
-
-    data["users"].append(new_user)
-    save_users(data)
-
-    print(f"\n  [OK] User '{name}' registered successfully!")
-    print(f"  Total users: {len(data['users'])}/{MAX_USERS}")
-    print("=" * 50 + "\n")
-
-    return new_user
-
-
-# ============ OpenCV GUI Registration ============
-
-class RegistrationGUI:
-    """
-    Simple OpenCV-based GUI for registering a new user.
-    Uses keyboard input overlaid on the camera feed.
-    """
-    def __init__(self):
-        self.state = "idle"  # idle, name, age, med_name, med_times, confirm
-        self.input_buffer = ""
-        self.name = ""
-        self.age = ""
-        self.medications = []
-        self.current_med_name = ""
-        self.message = ""
-        self.done = False
-        self.result = None  # final user dict or None
-
-    def start(self):
-        self.state = "name"
-        self.input_buffer = ""
-        self.message = "Type name, press ENTER to confirm"
-        self.done = False
-
-    def handle_key(self, key):
-        if self.done:
-            return
-
-        if key == -1:
-            return
-
-        char = chr(key & 0xFF) if 0 <= (key & 0xFF) < 128 else ""
-
-        # ENTER
-        if key in (13, 10):
-            self._on_enter()
-            return
-
-        # BACKSPACE
-        if key in (8, 127):
-            self.input_buffer = self.input_buffer[:-1]
-            return
-
-        # ESC -> cancel
-        if key == 27:
-            self.state = "idle"
-            self.done = True
-            self.result = None
-            self.message = "Registration cancelled"
-            return
-
-        # Normal character
-        if char.isprintable() and len(self.input_buffer) < 40:
-            self.input_buffer += char
-
-    def _on_enter(self):
-        if self.state == "name":
-            if self.input_buffer.strip():
-                self.name = self.input_buffer.strip()
-                self.input_buffer = ""
-                self.state = "age"
-                self.message = "Type age, press ENTER"
-            else:
-                self.message = "Name cannot be empty!"
-
-        elif self.state == "age":
-            self.age = self.input_buffer.strip()
-            self.input_buffer = ""
-            self.state = "med_name"
-            self.message = "Medication name (empty + ENTER to finish)"
-
-        elif self.state == "med_name":
-            if self.input_buffer.strip():
-                self.current_med_name = self.input_buffer.strip()
-                self.input_buffer = ""
-                self.state = "med_times"
-                self.message = f"Times for '{self.current_med_name}' (e.g. 8:00,12:00)"
-            else:
-                # No more meds -> done
-                self.state = "idle"
-                self.done = True
-                self.result = {
-                    "name": self.name,
-                    "age": self.age,
-                    "medications": self.medications,
-                }
-                self.message = f"User '{self.name}' registered!"
-
-        elif self.state == "med_times":
-            times_str = self.input_buffer.strip()
-            times = [t.strip() for t in times_str.split(",") if t.strip()]
-            if times:
-                self.medications.append({
-                    "name": self.current_med_name,
-                    "times": times
-                })
-            self.input_buffer = ""
-            self.state = "med_name"
-            self.message = "Next medication name (empty + ENTER to finish)"
-
-    def draw(self, frame):
-        """Draw registration overlay on frame."""
-        if self.state == "idle" and not self.done:
-            return frame
-
-        overlay = frame.copy()
-        h, w = overlay.shape[:2]
-
-        # Dark panel
-        cv2.rectangle(overlay, (40, 40), (w - 40, h - 40), (30, 30, 30), -1)
-        cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
-
-        y = 90
-        cv2.putText(frame, "=== NEW USER REGISTRATION ===", (60, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-
-        y += 40
-        cv2.putText(frame, f"Name: {self.name if self.state != 'name' else self.input_buffer + '_'}",
-                    (60, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        y += 35
-        if self.state in ("age", "med_name", "med_times") or self.done:
-            cv2.putText(frame, f"Age: {self.age if self.state != 'age' else self.input_buffer + '_'}",
-                        (60, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        y += 35
-        if self.medications or self.state in ("med_name", "med_times"):
-            cv2.putText(frame, "Medications:", (60, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 255), 2)
-            y += 30
-            for med in self.medications:
-                times_str = ", ".join(med["times"])
-                cv2.putText(frame, f"  {med['name']} @ {times_str}",
-                            (80, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 255, 180), 1)
-                y += 28
-
-        # Current input field
-        if not self.done:
-            y += 10
-            if self.state == "med_name":
-                cv2.putText(frame, f"Med name: {self.input_buffer}_",
-                            (60, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            elif self.state == "med_times":
-                cv2.putText(frame, f"Times: {self.input_buffer}_",
-                            (60, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-        # Message
-        y += 40
-        cv2.putText(frame, self.message, (60, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
-
-        # Instructions
-        cv2.putText(frame, "ESC to cancel", (60, h - 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-
-        return frame
-
-
-# ============ Median Depth Helper ============
-
-def median_depth_at(depth_frame, x, y, k=5):
-    """Get median depth in meters from kxk region around (x,y)."""
+def median_depth_at(depth_frame, x, y, k=7):
     h, w = depth_frame.get_height(), depth_frame.get_width()
-    x0, y0 = max(0, x - k // 2), max(0, y - k // 2)
-    x1, y1 = min(w, x + k // 2 + 1), min(h, y + k // 2 + 1)
+    x, y = int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))
     vals = []
-    for yy in range(y0, y1):
-        for xx in range(x0, x1):
+    for yy in range(max(0, y - k // 2), min(h, y + k // 2 + 1)):
+        for xx in range(max(0, x - k // 2), min(w, x + k // 2 + 1)):
             d = depth_frame.get_distance(xx, yy)
-            if d > 0:
+            if 0.05 < d < 2.0:
                 vals.append(d)
     return float(np.median(vals)) if vals else 0.0
 
 
-# ============ Main Vision Loop ============
+# ======================= Multi-Frame Tracker =======================
+
+class FaceTracker:
+    """
+    Requires N consistent identity matches in M frames before confirming.
+    Prevents single-frame false positives and false negatives.
+    """
+    def __init__(self):
+        self.history = []
+        self.last_seen = 0
+
+    def update(self, identity, score, now):
+        if identity == "uncertain":
+            return
+        self.last_seen = now
+        self.history.append((identity, score, now))
+        self.history = self.history[-CONFIRM_WINDOW_FRAMES:]
+
+    def get_confirmed(self):
+        if len(self.history) < CONFIRM_FRAMES_NEEDED:
+            return None
+        counts = {}
+        for name, _, _ in self.history:
+            counts[name] = counts.get(name, 0) + 1
+        for name, count in counts.items():
+            if name == "unknown" and count >= UNKNOWN_CONFIRM_FRAMES:
+                return "unknown"
+            elif name != "unknown" and count >= CONFIRM_FRAMES_NEEDED:
+                return name
+        return None
+
+    def reset(self):
+        self.history.clear()
+
+    def is_stale(self, now, timeout=2.0):
+        return (now - self.last_seen) > timeout
+
+
+# ======================= Registration GUI =======================
+
+class RegistrationGUI:
+    def __init__(self):
+        self.state = "idle"
+        self.buf = ""
+        self.name = ""
+        self.age = ""
+        self.medications = []
+        self.cur_med = ""
+        self.msg = ""
+        self.done = False
+        self.result = None
+
+    def start(self):
+        self.state = "name"
+        self.buf = ""
+        self.msg = "Type NAME, press ENTER"
+        self.done = False
+        self.result = None
+
+    def handle_key(self, key):
+        if self.done or key == -1:
+            return
+        if key in (13, 10):
+            self._enter()
+        elif key in (8, 127):
+            self.buf = self.buf[:-1]
+        elif key == 27:
+            self.done = True
+            self.result = None
+            self.msg = "Cancelled"
+        else:
+            ch = chr(key & 0xFF) if 0 <= (key & 0xFF) < 128 else ""
+            if ch.isprintable() and len(self.buf) < 50:
+                self.buf += ch
+
+    def _enter(self):
+        if self.state == "name":
+            if self.buf.strip():
+                self.name = self.buf.strip()
+                self.buf = ""
+                self.state = "age"
+                self.msg = "Type AGE, press ENTER"
+            else:
+                self.msg = "Name cannot be empty!"
+        elif self.state == "age":
+            self.age = self.buf.strip() or "N/A"
+            self.buf = ""
+            self.state = "med_name"
+            self.msg = "Med name (empty ENTER = finish)"
+        elif self.state == "med_name":
+            if self.buf.strip():
+                self.cur_med = self.buf.strip()
+                self.buf = ""
+                self.state = "med_times"
+                self.msg = f"Times for '{self.cur_med}' (e.g. 8:00,12:00,20:00)"
+            else:
+                self.done = True
+                self.result = {"name": self.name, "age": self.age, "medications": self.medications}
+                self.msg = f"Registered: {self.name}!"
+        elif self.state == "med_times":
+            times = [t.strip() for t in self.buf.split(",") if t.strip()]
+            if times:
+                self.medications.append({"name": self.cur_med, "times": times})
+            self.buf = ""
+            self.state = "med_name"
+            self.msg = "Next med (empty ENTER = finish)"
+
+    def draw(self, frame):
+        if self.state == "idle" and not self.done:
+            return frame
+        h, w = frame.shape[:2]
+        ov = frame.copy()
+        cv2.rectangle(ov, (20, 20), (w - 20, h - 20), (15, 15, 15), -1)
+        cv2.addWeighted(ov, 0.88, frame, 0.12, 0, frame)
+
+        y = 70
+        cv2.putText(frame, "=== NEW USER REGISTRATION ===", (40, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
+
+        y += 48
+        ntxt = (self.buf + "|") if self.state == "name" else self.name
+        cv2.putText(frame, f"Name: {ntxt}", (40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        if self.state != "name":
+            y += 36
+            atxt = (self.buf + "|") if self.state == "age" else self.age
+            cv2.putText(frame, f"Age:  {atxt}", (40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        if self.medications or self.state in ("med_name", "med_times"):
+            y += 36
+            cv2.putText(frame, "Medications:", (40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 255), 2)
+            for med in self.medications:
+                y += 28
+                cv2.putText(frame, f"  * {med['name']} @ {', '.join(med['times'])}",
+                            (60, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 255, 150), 1)
+
+        if not self.done:
+            y += 35
+            if self.state == "med_name":
+                cv2.putText(frame, f"Med: {self.buf}|", (40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            elif self.state == "med_times":
+                cv2.putText(frame, f"Times: {self.buf}|", (40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        y += 42
+        cv2.putText(frame, self.msg, (40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+        cv2.putText(frame, "ESC=cancel", (40, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (120, 120, 120), 1)
+        return frame
+
+
+# ======================= Main System =======================
 
 class MedReminderVision:
     def __init__(self):
-        # RealSense setup
+        print("[INFO] Loading InsightFace (first run downloads ~30MB models)...")
+        self.face_app = FaceAnalysis(
+            name=INSIGHTFACE_MODEL,
+            root="./insightface_models",
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        self.face_app.prepare(ctx_id=0, det_size=(640, 480))
+        print("[INFO] InsightFace ready.")
+
+        print("[INFO] Starting RealSense D435i...")
         self.pipe = rs.pipeline()
         cfg = rs.config()
         cfg.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 30)
         cfg.enable_stream(rs.stream.color, 848, 480, rs.format.bgr8, 30)
-
-        print("[INFO] Starting RealSense pipeline...")
         self.profile = self.pipe.start(cfg)
         self.align = rs.align(rs.stream.color)
-
-        # Warm up
-        for _ in range(15):
+        for _ in range(20):
             self.pipe.wait_for_frames(5000)
         print("[INFO] Camera ready.")
 
-        # User data
         self.data = load_users()
-        print(f"[INFO] Loaded {len(self.data['users'])} users from {USERS_JSON}")
+        print(f"[INFO] {len(self.data['users'])} registered users.")
 
-        # State
-        self.last_reminder = {}  # user_name -> timestamp
-        self.registration_gui = RegistrationGUI()
+        self.tracker = FaceTracker()
+        self.last_reminder = {}
+        self.last_register = 0
         self.registering = False
-        self.pending_encoding = None  # encoding for user being registered
-
-        # Display state
+        self.reg_gui = RegistrationGUI()
+        self.pending_emb = None
         self.overlay_lines = []
         self.overlay_color = (0, 255, 0)
-        self.overlay_time = 0
+        self.overlay_expire = 0
 
-    def set_overlay(self, lines, color=(0, 255, 0), duration=5.0):
+    def set_overlay(self, lines, color=(0, 255, 0), dur=6.0):
         self.overlay_lines = lines
         self.overlay_color = color
-        self.overlay_time = time.time() + duration
+        self.overlay_expire = time.time() + dur
 
     def run(self):
-        print("[INFO] Starting medication reminder system.")
-        print(f"[INFO] Detection distance: {DETECTION_DISTANCE_M*100:.0f} cm")
-        print("[INFO] Press 'q' to quit.\n")
+        print(f"\n{'='*55}")
+        print(f"  Med Reminder | {DETECTION_DISTANCE_M*100:.0f}cm | "
+              f"{len(self.data['users'])}/{MAX_USERS} users | 'q' quit")
+        print(f"{'='*55}\n")
 
         try:
             while True:
-                # Get frames
                 frames = self.pipe.wait_for_frames(5000)
                 aligned = self.align.process(frames)
-                depth_frame = aligned.get_depth_frame()
-                color_frame = aligned.get_color_frame()
-
-                if not depth_frame or not color_frame:
+                depth_f = aligned.get_depth_frame()
+                color_f = aligned.get_color_frame()
+                if not depth_f or not color_f:
                     continue
 
-                color_img = np.asanyarray(color_frame.get_data())
-                display = color_img.copy()
+                img = np.asanyarray(color_f.get_data())
+                disp = img.copy()
+                now = time.time()
 
-                # If we're in registration mode, handle that
+                # --- Registration mode ---
                 if self.registering:
                     key = cv2.waitKey(1) & 0xFFFF
-                    self.registration_gui.handle_key(key)
-                    display = self.registration_gui.draw(display)
-
-                    if self.registration_gui.done:
-                        result = self.registration_gui.result
-                        if result and self.pending_encoding is not None:
-                            # Check max users
-                            if len(self.data["users"]) < MAX_USERS:
-                                new_user = {
-                                    "name": result["name"],
-                                    "age": result["age"],
-                                    "medications": result["medications"],
-                                    "face_encoding": self.pending_encoding.tolist(),
-                                    "created": datetime.now().isoformat(),
-                                }
-                                self.data["users"].append(new_user)
-                                save_users(self.data)
-                                self.set_overlay(
-                                    [f"User '{result['name']}' registered!",
-                                     f"Total: {len(self.data['users'])}/{MAX_USERS}"],
-                                    (0, 255, 0), 4.0
-                                )
-                                print(f"[OK] Registered user: {result['name']}")
-                            else:
-                                self.set_overlay(["Max 10 users reached!"], (0, 0, 255), 3.0)
-
+                    self.reg_gui.handle_key(key)
+                    disp = self.reg_gui.draw(disp)
+                    if self.reg_gui.done:
+                        r = self.reg_gui.result
+                        if r and self.pending_emb is not None and len(self.data["users"]) < MAX_USERS:
+                            self.data["users"].append({
+                                "name": r["name"], "age": r["age"],
+                                "medications": r["medications"],
+                                "face_encoding": self.pending_emb.tolist(),
+                                "created": datetime.now().isoformat(),
+                            })
+                            save_users(self.data)
+                            self.set_overlay([f"Registered: {r['name']}",
+                                              f"Users: {len(self.data['users'])}/{MAX_USERS}"], (0,255,0), 5)
+                            print(f"[REGISTERED] {r['name']}")
+                        elif r and len(self.data["users"]) >= MAX_USERS:
+                            self.set_overlay(["Max 10 users reached!"], (0,0,255), 4)
+                        else:
+                            self.set_overlay(["Registration cancelled."], (100,100,255), 3)
                         self.registering = False
-                        self.pending_encoding = None
-
-                    cv2.imshow("Med Reminder", display)
-                    if key in (ord('q'), 27) and not self.registering:
-                        break
+                        self.pending_emb = None
+                        self.tracker.reset()
+                    self._draw_hud(disp)
+                    cv2.imshow("Med Reminder", disp)
                     continue
 
-                # ---- Normal detection mode ----
+                # --- Detection ---
+                faces = self.face_app.get(img)
 
-                # Convert to RGB for face_recognition
-                rgb_small = cv2.cvtColor(color_img, cv2.COLOR_BGR2RGB)
+                # Pick closest in-range face
+                best_face = None
+                best_dist = 999.0
+                for face in faces:
+                    bx = face.bbox.astype(int)
+                    cx, cy = (bx[0]+bx[2])//2, (bx[1]+bx[3])//2
+                    d = median_depth_at(depth_f, cx, cy, k=9)
 
-                # Detect faces
-                face_locations = face_recognition.face_locations(rgb_small, model="hog")
+                    # Draw all faces
+                    if 0 < d <= DETECTION_DISTANCE_M:
+                        cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (0,255,0), 2)
+                        cv2.putText(disp, f"{d:.2f}m", (bx[0], bx[1]-8),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,255,0), 2)
+                        if d < best_dist:
+                            best_face = face
+                            best_dist = d
+                    elif d > DETECTION_DISTANCE_M:
+                        cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (100,100,100), 1)
+                        cv2.putText(disp, f"{d:.2f}m (far)", (bx[0], bx[1]-8),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100,100,100), 1)
 
-                for (top, right, bottom, left) in face_locations:
-                    # Get face center depth
-                    face_cx = (left + right) // 2
-                    face_cy = (top + bottom) // 2
-                    dist_m = median_depth_at(depth_frame, face_cx, face_cy, k=9)
+                if best_face is not None and best_face.embedding is not None:
+                    emb = best_face.embedding
+                    bx = best_face.bbox.astype(int)
+                    user, idx, score = find_matching_user(emb, self.data)
 
-                    # Draw face box (always)
-                    color_box = (100, 100, 100)
-                    label = f"Face {dist_m:.2f}m"
+                    if user and score >= MATCH_THRESHOLD:
+                        name = user["name"]
+                        self.tracker.update(name, score, now)
+                        cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (0,255,0), 3)
+                        cv2.putText(disp, f"{name} ({score:.2f})", (bx[0], bx[3]+22),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+                    elif score < UNKNOWN_CEILING:
+                        self.tracker.update("unknown", score, now)
+                        cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (0,165,255), 3)
+                        cv2.putText(disp, f"Unknown ({score:.2f})", (bx[0], bx[3]+22),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,165,255), 2)
+                    else:
+                        # Uncertain zone - keep watching
+                        cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (0,255,255), 2)
+                        cv2.putText(disp, f"Checking ({score:.2f})", (bx[0], bx[3]+22),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
 
-                    if dist_m > 0 and dist_m <= DETECTION_DISTANCE_M:
-                        # Close enough - do recognition
-                        color_box = (0, 255, 0)
+                    # Multi-frame confirmation
+                    confirmed = self.tracker.get_confirmed()
+                    if confirmed and confirmed != "unknown":
+                        if now - self.last_reminder.get(confirmed, 0) > RECOGNITION_COOLDOWN_S:
+                            self.last_reminder[confirmed] = now
+                            for u in self.data["users"]:
+                                if u["name"] == confirmed:
+                                    meds = get_pending_meds(u)
+                                    self.set_overlay(
+                                        [f"Hello, {confirmed}! (age: {u.get('age','?')})",
+                                         "-"*30, "Medication Schedule:"] + meds,
+                                        (0,255,0), 8)
+                                    print(f"[REMINDER] {confirmed}: {meds}")
+                                    break
+                            self.tracker.reset()
+                    elif confirmed == "unknown":
+                        if now - self.last_register > REGISTER_COOLDOWN_S:
+                            self.last_register = now
+                            self.pending_emb = emb.copy()
+                            self.registering = True
+                            self.reg_gui = RegistrationGUI()
+                            self.reg_gui.start()
+                            self.tracker.reset()
+                            print("[NEW FACE] Starting registration...")
+                else:
+                    if self.tracker.is_stale(now):
+                        self.tracker.reset()
 
-                        encodings = face_recognition.face_encodings(rgb_small, [(top, right, bottom, left)])
-                        if encodings:
-                            enc = encodings[0]
-                            user, idx = find_matching_user(enc, self.data)
-
-                            if user is not None:
-                                # Known user!
-                                name = user["name"]
-                                color_box = (0, 255, 0)
-                                label = f"{name} ({dist_m:.2f}m)"
-
-                                # Check cooldown
-                                now = time.time()
-                                last = self.last_reminder.get(name, 0)
-                                if now - last > RECOGNITION_COOLDOWN_S:
-                                    self.last_reminder[name] = now
-                                    meds = get_pending_meds(user)
-                                    lines = [f"Hello, {name}!",
-                                             f"Age: {user.get('age', '?')}",
-                                             "--- Medication Schedule ---"]
-                                    lines.extend(meds if meds else ["No medications set."])
-                                    self.set_overlay(lines, (0, 255, 0), 6.0)
-                                    print(f"[REMINDER] {name}: {meds}")
-                            else:
-                                # Unknown face within 20cm
-                                color_box = (0, 165, 255)
-                                label = f"Unknown ({dist_m:.2f}m)"
-
-                                # Start registration
-                                now = time.time()
-                                if now - self.last_reminder.get("__new__", 0) > 3.0:
-                                    self.last_reminder["__new__"] = now
-                                    self.pending_encoding = enc
-                                    self.registering = True
-                                    self.registration_gui = RegistrationGUI()
-                                    self.registration_gui.start()
-                                    print("[NEW FACE] Starting registration...")
-
-                    elif dist_m > DETECTION_DISTANCE_M:
-                        color_box = (128, 128, 128)
-                        label = f"Too far ({dist_m:.2f}m)"
-
-                    # Draw
-                    cv2.rectangle(display, (left, top), (right, bottom), color_box, 2)
-                    cv2.putText(display, label, (left, top - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_box, 2)
-
-                # Draw overlay messages
-                if self.overlay_lines and time.time() < self.overlay_time:
-                    h, w = display.shape[:2]
-                    panel_h = 40 + 30 * len(self.overlay_lines)
-                    panel_y = h - panel_h - 20
-                    overlay = display.copy()
-                    cv2.rectangle(overlay, (20, panel_y), (w - 20, h - 20), (30, 30, 30), -1)
-                    cv2.addWeighted(overlay, 0.8, display, 0.2, 0, display)
-
-                    for i, line in enumerate(self.overlay_lines):
-                        cv2.putText(display, line, (40, panel_y + 30 + i * 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, self.overlay_color, 2)
-
-                # FPS & status
-                cv2.putText(display, f"Users: {len(self.data['users'])}/{MAX_USERS}",
-                            (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-                cv2.putText(display, "Press 'q' to quit",
-                            (10, display.shape[0] - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-
-                cv2.imshow("Med Reminder", display)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+                self._draw_overlay(disp)
+                self._draw_hud(disp)
+                cv2.imshow("Med Reminder", disp)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
-
         finally:
             self.pipe.stop()
             cv2.destroyAllWindows()
-            print("[INFO] System stopped.")
+            print("[INFO] Stopped.")
 
+    def _draw_overlay(self, disp):
+        if not self.overlay_lines or time.time() >= self.overlay_expire:
+            return
+        h, w = disp.shape[:2]
+        n = len(self.overlay_lines)
+        ph = 30 + 28 * n
+        py = h - ph - 12
+        ov = disp.copy()
+        cv2.rectangle(ov, (12, py), (w-12, h-12), (20,20,20), -1)
+        cv2.rectangle(ov, (12, py), (w-12, h-12), self.overlay_color, 2)
+        cv2.addWeighted(ov, 0.85, disp, 0.15, 0, disp)
+        for i, line in enumerate(self.overlay_lines):
+            cv2.putText(disp, line, (28, py+26+i*28),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.overlay_color, 2)
 
-# ============ Entry Point ============
+    def _draw_hud(self, disp):
+        h, w = disp.shape[:2]
+        cv2.putText(disp, f"Users: {len(self.data['users'])}/{MAX_USERS} | "
+                          f"Range: {DETECTION_DISTANCE_M*100:.0f}cm",
+                    (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,200,255), 2)
+        nh = len(self.tracker.history)
+        if nh:
+            cv2.putText(disp, f"Tracking: {nh}/{CONFIRM_FRAMES_NEEDED} frames",
+                        (8, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180,180,180), 1)
+        cv2.putText(disp, "'q' quit", (w-100, h-8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100,100,100), 1)
+
 
 if __name__ == "__main__":
-    system = MedReminderVision()
-    system.run()
+    MedReminderVision().run()
