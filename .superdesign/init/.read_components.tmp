@@ -1,3 +1,205 @@
+# components.md
+
+## Framework Summary
+- Framework: Flask + server-rendered HTML template
+- Frontend runtime: vanilla JavaScript
+- Animation: GSAP (CDN) + CSS keyframes
+- CSS approach: single global stylesheet (`static/css/style.css`)
+- Component library: custom primitives (no external React/Vue component library)
+
+## Shared UI Primitives Source
+
+### `templates/index.html`
+Brief: Contains reusable visual primitives (`.btn`, `.card`, `.view`, `.badge`, drawer structure) and all view sections.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sauron MedDispenser</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body class="theme-idle">
+  <header class="app-header">
+    <div class="brand">
+      <div class="status-dot" id="globalStatusDot"></div>
+      <h1>Sauron <span class="fw-light">MedDispenser</span></h1>
+    </div>
+
+    <div class="header-controls">
+      <div class="system-badges">
+        <span class="badge" id="phaseBadge">PHASE: --</span>
+        <span class="badge" id="stateBadge">STATE: --</span>
+      </div>
+      <button id="audioUnlockBtn" class="btn btn-outline btn-sm" type="button">Enable Voice</button>
+    </div>
+  </header>
+
+  <main class="app-layout">
+    <section class="main-view-container" id="mainStage">
+      <div id="transitionOverlay" class="transition-overlay"></div>
+      <div id="helloBanner" class="hello-banner">
+        <p id="helloText">Hello</p>
+      </div>
+
+      <div id="startView" class="view active">
+        <div class="view-content center-content">
+          <div class="mascot-wrap" aria-hidden="true">
+            <div class="mascot-eyes">
+              <div class="eye">
+                <div class="pupil"></div>
+                <div class="glint"></div>
+                <div class="lid"></div>
+              </div>
+              <div class="eye">
+                <div class="pupil"></div>
+                <div class="glint"></div>
+                <div class="lid"></div>
+              </div>
+            </div>
+          </div>
+          <h2>Ready to Dispense</h2>
+          <p class="subtitle">Tap start or walk near the device to begin.</p>
+          <button id="startBtn" class="btn btn-primary btn-xl" type="button" disabled>Start System</button>
+        </div>
+      </div>
+
+      <div id="monitorView" class="view">
+        <div class="view-content center-content">
+          <h2>Detecting User</h2>
+          <p class="subtitle" id="distanceSubtitle">Please move closer to the camera.</p>
+          <div class="camera-container">
+            <video id="liveVideo" autoplay playsinline muted></video>
+            <div class="scan-line"></div>
+            <div class="scan-frame"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="recognitionView" class="view">
+        <div class="view-content">
+          <h2>Local Face Recognition</h2>
+          <p class="subtitle">Jetson + RealSense local pipeline is active.</p>
+
+          <div class="ring-stage">
+            <div class="scan-ring"></div>
+          </div>
+
+          <div class="demo-controls">
+            <div class="card">
+              <h3>Recognized Existing User</h3>
+              <select id="existingUserSelect" class="input-modern" disabled></select>
+              <button id="existingUserBtn" class="btn btn-success" type="button" disabled>Simulate Login</button>
+            </div>
+            <div class="divider">OR</div>
+            <div class="card">
+              <h3>Unknown Face</h3>
+              <button id="newUserBtn" class="btn btn-outline" type="button" disabled>Register New User</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="registerView" class="view">
+        <div class="view-content">
+          <h2>New User Registration</h2>
+          <p class="subtitle">Capture a face and bind medication + servo channel.</p>
+          <form id="registerForm" class="form-grid">
+            <div class="input-group">
+              <label for="nameInput">Full Name</label>
+              <input type="text" id="nameInput" required class="input-modern" placeholder="e.g. Jane Doe" />
+            </div>
+            <div class="input-group">
+              <label for="ageInput">Age</label>
+              <input type="number" id="ageInput" class="input-modern" placeholder="Age" />
+            </div>
+            <div class="input-group">
+              <label for="medicationInput">Medication</label>
+              <input type="text" id="medicationInput" required class="input-modern" placeholder="e.g. Ibuprofen" />
+            </div>
+            <div class="input-group">
+              <label for="dosageInput">Dosage</label>
+              <input type="text" id="dosageInput" class="input-modern" placeholder="e.g. 2 pills" />
+            </div>
+            <div class="input-group">
+              <label for="servoChannelInput">Servo Channel (1-4)</label>
+              <input type="number" id="servoChannelInput" min="1" max="4" required class="input-modern" value="1" />
+            </div>
+
+            <div class="photo-capture-section">
+              <button type="button" id="captureBtn" class="btn btn-outline btn-sm">Capture Face</button>
+              <span id="photoStatus" class="micro-text">No photo captured.</span>
+              <img id="capturePreview" class="hidden" alt="Face Preview" />
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-block">Save Profile</button>
+          </form>
+        </div>
+      </div>
+
+      <div id="workingView" class="view">
+        <div class="view-content center-content">
+          <h2 id="workingTitle">Dispensing...</h2>
+          <p class="subtitle" id="workingSubtitle">Preparing hardware action.</p>
+          <div class="spinner"></div>
+
+          <div id="adviceContainer" class="advice-card hidden">
+            <h3>Health Advice</h3>
+            <p id="adviceText"></p>
+            <p class="micro-text text-accent">Auto-closing in <span id="speechRemaining">--</span>s</p>
+            <button id="stopAdviceBtn" class="btn btn-outline btn-sm" type="button">Acknowledge</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="errorView" class="view">
+        <div class="view-content center-content">
+          <div class="icon-error">!</div>
+          <h2>System Fault</h2>
+          <p class="error-text" id="lastError"></p>
+          <button id="resetBtn" class="btn btn-outline mt-4" type="button">Reset System</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <button id="debugToggleBtn" class="debug-toggle-btn" type="button">System Panel</button>
+  <div id="debugScrim" class="debug-scrim"></div>
+  <aside id="debugPanel" class="debug-panel">
+    <div class="drawer-header">
+      <h3>System Metrics</h3>
+      <button id="debugCloseBtn" class="btn btn-outline btn-sm" type="button">Close</button>
+    </div>
+    <div class="metric-row"><span>UART:</span><strong id="uartVal">--</strong></div>
+    <div class="metric-row"><span>Motor Power:</span><strong id="motorPowerVal">--</strong></div>
+    <div class="metric-row"><span>Distance:</span><strong id="distanceVal">--</strong><span>/</span><span id="thresholdVal">--</span></div>
+
+    <div class="simulator-box">
+      <h4>Distance Simulator</h4>
+      <form id="distanceForm" class="flex-row">
+        <input type="number" step="0.1" id="distanceInput" class="input-modern input-sm" placeholder="Meters" value="1.0" />
+        <button type="submit" id="distanceBtn" class="btn btn-secondary btn-sm" disabled>Update</button>
+      </form>
+    </div>
+
+    <h4>FSM History</h4>
+    <ul id="historyList" class="history-list"></ul>
+  </aside>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+
+
+```
+
+### `static/js/app.js`
+Brief: Contains reusable UI controllers for view switching, transitions, TTS, and drawer interactions.
+
+```js
 const gsapLib = window.gsap || null;
 
 const bodyEl = document.body;
@@ -10,7 +212,6 @@ const transitionOverlay = document.getElementById("transitionOverlay");
 const helloBanner = document.getElementById("helloBanner");
 const helloText = document.getElementById("helloText");
 const distanceSubtitle = document.getElementById("distanceSubtitle");
-const sceneFrame = document.getElementById("sceneFrame");
 
 const debugPanel = document.getElementById("debugPanel");
 const debugScrim = document.getElementById("debugScrim");
@@ -22,11 +223,7 @@ const views = {
   MONITORING_DISTANCE: document.getElementById("monitorView"),
   FACE_RECOGNITION: document.getElementById("recognitionView"),
   REGISTER_NEW_USER: document.getElementById("registerView"),
-  DISPENSING_PILL: document.getElementById("dispenseView"),
-  GENERATING_ADVICE: document.getElementById("adviceView"),
-  SPEAKING_ADVICE: document.getElementById("adviceView"),
-  REGISTRATION_SUCCESS: document.getElementById("completionView"),
-  SESSION_SUCCESS: document.getElementById("completionView"),
+  WORKING: document.getElementById("workingView"),
   ERROR: document.getElementById("errorView"),
 };
 
@@ -46,24 +243,11 @@ const distanceVal = document.getElementById("distanceVal");
 const thresholdVal = document.getElementById("thresholdVal");
 const historyList = document.getElementById("historyList");
 
-const dispenseTitle = document.getElementById("dispenseTitle");
-const dispenseSubtitle = document.getElementById("dispenseSubtitle");
-const dispenseUserName = document.getElementById("dispenseUserName");
-const dispenseMedication = document.getElementById("dispenseMedication");
-const dispenseServoChannel = document.getElementById("dispenseServoChannel");
-const dispenseUartStatus = document.getElementById("dispenseUartStatus");
-
-const adviceTitle = document.getElementById("adviceTitle");
-const adviceSubtitle = document.getElementById("adviceSubtitle");
-const adviceLoading = document.getElementById("adviceLoading");
+const workingTitle = document.getElementById("workingTitle");
+const workingSubtitle = document.getElementById("workingSubtitle");
 const adviceContainer = document.getElementById("adviceContainer");
 const adviceText = document.getElementById("adviceText");
 const speechRemaining = document.getElementById("speechRemaining");
-
-const completionTitle = document.getElementById("completionTitle");
-const completionSubtitle = document.getElementById("completionSubtitle");
-const completionCountdown = document.getElementById("completionCountdown");
-
 const lastError = document.getElementById("lastError");
 
 const liveVideo = document.getElementById("liveVideo");
@@ -71,32 +255,6 @@ const captureBtn = document.getElementById("captureBtn");
 const capturePreview = document.getElementById("capturePreview");
 const photoStatus = document.getElementById("photoStatus");
 const registerForm = document.getElementById("registerForm");
-
-const stateLabelMap = {
-  WAITING_FOR_USER: "IDLE WELCOME",
-  MONITORING_DISTANCE: "WAKE & DETECTION",
-  FACE_RECOGNITION: "LOCAL FACE CHECK",
-  REGISTER_NEW_USER: "NEW USER REGISTRATION",
-  REGISTRATION_SUCCESS: "REGISTRATION COMPLETE",
-  DISPENSING_PILL: "DISPENSING & GREETING",
-  GENERATING_ADVICE: "GENERATING ADVICE",
-  SPEAKING_ADVICE: "ADVICE PLAYBACK",
-  SESSION_SUCCESS: "SESSION COMPLETE",
-  ERROR: "FAULT & RECOVERY",
-};
-
-const sceneSlugMap = {
-  WAITING_FOR_USER: "idle",
-  MONITORING_DISTANCE: "wake",
-  FACE_RECOGNITION: "recognition",
-  REGISTER_NEW_USER: "register",
-  DISPENSING_PILL: "dispense",
-  GENERATING_ADVICE: "advice",
-  SPEAKING_ADVICE: "advice",
-  REGISTRATION_SUCCESS: "completion",
-  SESSION_SUCCESS: "completion",
-  ERROR: "fault",
-};
 
 let cameraStream = null;
 let capturedPhotoDataUrl = "";
@@ -112,8 +270,6 @@ let drawerOpen = false;
 let audioContext = null;
 let audioUnlocked = false;
 let selectedVoice = null;
-let currentSceneSlug = "";
-let lastStatusData = null;
 
 function requestJson(url, method = "GET", body = null) {
   const options = {
@@ -137,305 +293,6 @@ function requestJson(url, method = "GET", body = null) {
   });
 }
 
-function getSceneSlugForState(state) {
-  return sceneSlugMap[state] || "idle";
-}
-
-function getSceneDocument() {
-  try {
-    if (!sceneFrame || !sceneFrame.contentWindow) {
-      return null;
-    }
-    return sceneFrame.contentDocument || sceneFrame.contentWindow.document || null;
-  } catch (_err) {
-    return null;
-  }
-}
-
-function updateSceneFrame(state) {
-  if (!sceneFrame) {
-    return;
-  }
-  const slug = getSceneSlugForState(state);
-  if (slug === currentSceneSlug) {
-    return;
-  }
-  currentSceneSlug = slug;
-  sceneFrame.src = `/ui-scene/${slug}`;
-}
-
-function bindSceneClick(doc, id, handler) {
-  const el = doc.getElementById(id);
-  if (!el || el.dataset.shellBound === "1") {
-    return el;
-  }
-  el.dataset.shellBound = "1";
-  el.addEventListener("click", (event) => {
-    event.preventDefault();
-    handler(event, el);
-  });
-  return el;
-}
-
-function parseServoChannelFromScene(selectEl) {
-  if (!selectEl) {
-    return 1;
-  }
-  const text = `${selectEl.value || ""} ${selectEl.options?.[selectEl.selectedIndex]?.text || ""}`;
-  const match = text.match(/channel\s*0*([1-4])/i) || text.match(/\b([1-4])\b/);
-  return match ? Number(match[1]) : 1;
-}
-
-function buildFallbackPhotoDataUrl() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 160;
-  canvas.height = 120;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    return "";
-  }
-  const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-  gradient.addColorStop(0, "#17386a");
-  gradient.addColorStop(1, "#58c3ff");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "rgba(255,255,255,0.18)";
-  ctx.beginPath();
-  ctx.arc(80, 46, 22, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.roundRect?.(40, 74, 80, 28, 12);
-  if (!ctx.roundRect) {
-    ctx.fillRect(40, 74, 80, 28);
-  }
-  ctx.fill();
-  return canvas.toDataURL("image/jpeg", 0.82);
-}
-
-async function capturePhotoFromLiveVideo() {
-  if (!cameraStream) {
-    await ensureCameraReady();
-  }
-  if (!liveVideo.videoWidth || !liveVideo.videoHeight) {
-    return "";
-  }
-  const canvas = document.createElement("canvas");
-  canvas.width = liveVideo.videoWidth;
-  canvas.height = liveVideo.videoHeight;
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return "";
-  }
-  context.drawImage(liveVideo, 0, 0, canvas.width, canvas.height);
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-  capturedPhotoDataUrl = dataUrl;
-  if (capturePreview) {
-    capturePreview.src = dataUrl;
-    capturePreview.classList.remove("hidden");
-  }
-  if (photoStatus) {
-    photoStatus.textContent = "Captured locally.";
-  }
-  return dataUrl;
-}
-
-async function submitRegistrationFromScene() {
-  const doc = getSceneDocument();
-  if (!doc) {
-    return;
-  }
-  const inputs = [...doc.querySelectorAll("input.input-field")];
-  const select = doc.querySelector("select.input-field");
-  const [nameInputEl, ageInputEl, medicationInputEl, dosageInputEl] = inputs;
-
-  const name = (nameInputEl?.value || "").trim() || "Demo User";
-  const age = (ageInputEl?.value || "").trim();
-  const medication = (medicationInputEl?.value || "").trim() || "Ibuprofen";
-  const dosage = (dosageInputEl?.value || "").trim() || "1 pill";
-  const servoChannel = parseServoChannelFromScene(select);
-
-  let photo = capturedPhotoDataUrl;
-  if (!photo) {
-    photo = await capturePhotoFromLiveVideo();
-  }
-  if (!photo) {
-    photo = buildFallbackPhotoDataUrl();
-    capturedPhotoDataUrl = photo;
-    if (photoStatus) {
-      photoStatus.textContent = "Using generated placeholder face image (demo).";
-    }
-  }
-
-  await dispatchAction("/api/register", {
-    name,
-    age,
-    medication,
-    dosage,
-    servo_channel: servoChannel,
-    photo_data_url: photo,
-  });
-}
-
-async function captureRegistrationFaceFromScene(triggerEl) {
-  let photo = await capturePhotoFromLiveVideo();
-  if (!photo) {
-    photo = buildFallbackPhotoDataUrl();
-    capturedPhotoDataUrl = photo;
-    if (photoStatus) {
-      photoStatus.textContent = "Camera unavailable, using demo placeholder image.";
-    }
-  }
-  if (triggerEl) {
-    triggerEl.textContent = "Face Data Captured";
-    triggerEl.classList.add("opacity-80");
-  }
-}
-
-function bindSceneInteractions(data) {
-  const doc = getSceneDocument();
-  if (!doc || !data) {
-    return;
-  }
-
-  bindSceneClick(doc, "cta-start-session", () => {
-    unlockAudio();
-    dispatchAction("/api/start-monitoring");
-  });
-
-  bindSceneClick(doc, "proceed-to-scan-link", () => {
-    const threshold = Number(data.distance_threshold_m || 1.2);
-    dispatchAction("/api/distance", { distance_m: Math.max(0.2, threshold - 0.05) });
-  });
-
-  bindSceneClick(doc, "sim-match-link", () => {
-    if (!existingUserSelect?.value) {
-      return;
-    }
-    dispatchAction("/api/recognition/local", {
-      match_type: "existing",
-      user_id: existingUserSelect.value,
-      source: "REALSENSE_LOCAL",
-      confidence: 0.93,
-    });
-  });
-
-  bindSceneClick(doc, "sim-no-match-link", () => {
-    dispatchAction("/api/recognition/local", {
-      match_type: "new",
-      source: "REALSENSE_LOCAL",
-      confidence: 0.2,
-    });
-  });
-
-  bindSceneClick(doc, "cancel-registration", () => {
-    cancelSpeech();
-    dispatchAction("/api/reset");
-  });
-
-  bindSceneClick(doc, "submit-registration", async () => {
-    await submitRegistrationFromScene();
-  });
-
-  bindSceneClick(doc, "next-advice-link", () => {
-    // FSM auto-progresses after dispense; no manual transition endpoint needed here.
-  });
-
-  bindSceneClick(doc, "report-issue-link", () => {
-    dispatchAction("/api/reset");
-  });
-
-  bindSceneClick(doc, "finish-btn", () => {
-    if (data.state === "SPEAKING_ADVICE") {
-      cancelSpeech();
-      dispatchAction("/api/stop-advice");
-      return;
-    }
-    if (data.state === "REGISTRATION_SUCCESS" || data.state === "SESSION_SUCCESS" || data.state === "ERROR") {
-      cancelSpeech();
-      dispatchAction("/api/reset");
-    }
-  });
-
-  bindSceneClick(doc, "recovery-retry-link", () => {
-    cancelSpeech();
-    dispatchAction("/api/reset");
-  });
-
-  bindSceneClick(doc, "recovery-cancel-link", () => {
-    cancelSpeech();
-    dispatchAction("/api/reset");
-  });
-
-  bindSceneClick(doc, "support-link", () => {
-    // Placeholder action for local prototype.
-  });
-
-  const registerCaptureBtn = [...doc.querySelectorAll("button")]
-    .find((button) => /capture face data/i.test(button.textContent || ""));
-  if (registerCaptureBtn && registerCaptureBtn.dataset.shellBound !== "1") {
-    registerCaptureBtn.dataset.shellBound = "1";
-    registerCaptureBtn.addEventListener("click", async (event) => {
-      event.preventDefault();
-      await captureRegistrationFaceFromScene(registerCaptureBtn);
-    });
-  }
-}
-
-function syncSceneContent(data) {
-  const doc = getSceneDocument();
-  if (!doc || !data) {
-    return;
-  }
-  const state = data.state;
-  const user = data.active_user || {};
-
-  if (state === "DISPENSING_PILL") {
-    const heading = doc.querySelector("h2");
-    const nameAccent = heading?.querySelector("span");
-    if (nameAccent) {
-      nameAccent.textContent = user.name || "User";
-    }
-    const progressStatus = [...doc.querySelectorAll("*")]
-      .find((el) => /UART Buffer/i.test(el.textContent || ""));
-    if (progressStatus && progressStatus.nextElementSibling) {
-      progressStatus.nextElementSibling.textContent = `${data.last_uart_result?.status || "Pending"}`;
-    }
-  }
-
-  if (state === "SPEAKING_ADVICE" || state === "GENERATING_ADVICE") {
-    const adviceEl = doc.getElementById("advice-text");
-    if (adviceEl && state === "SPEAKING_ADVICE" && data.advice_text) {
-      adviceEl.textContent = data.advice_text;
-    }
-    const timerEl = doc.getElementById("session-timer");
-    if (timerEl) {
-      const seconds =
-        data.speech_seconds_remaining === null || data.speech_seconds_remaining === undefined
-          ? null
-          : Number(data.speech_seconds_remaining);
-      if (seconds === null || Number.isNaN(seconds)) {
-        timerEl.textContent = state === "GENERATING_ADVICE" ? "--:--" : timerEl.textContent;
-      } else {
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        timerEl.textContent = `${mins}:${String(secs).padStart(2, "0")}`;
-      }
-    }
-  }
-
-  if (state === "SESSION_SUCCESS" || state === "REGISTRATION_SUCCESS") {
-    const countdownText = [...doc.querySelectorAll("div,p,span")]
-      .find((el) => /Auto-closing in/i.test(el.textContent || ""));
-    if (countdownText) {
-      const seconds =
-        data.auto_return_seconds === null || data.auto_return_seconds === undefined
-          ? "--"
-          : String(data.auto_return_seconds);
-      countdownText.textContent = `Auto-closing in ${seconds}s`;
-    }
-  }
-}
-
 function initializeGsapPrimitives() {
   if (!gsapLib) {
     return;
@@ -445,7 +302,13 @@ function initializeGsapPrimitives() {
 }
 
 function switchView(state) {
-  const viewKey = views[state] ? state : "WAITING_FOR_USER";
+  let viewKey = "WORKING";
+  if (views[state]) {
+    viewKey = state;
+  }
+  if (state === "REGISTRATION_SUCCESS" || state === "SESSION_SUCCESS") {
+    viewKey = "WORKING";
+  }
 
   const nextEl = views[viewKey];
   const currentEl = views[currentViewKey];
@@ -499,7 +362,6 @@ function setThemeByState(state) {
     "theme-recognition",
     "theme-register",
     "theme-dispense",
-    "theme-success",
     "theme-error",
   );
 
@@ -521,10 +383,6 @@ function setThemeByState(state) {
   }
   if (state === "ERROR") {
     bodyEl.classList.add("theme-error");
-    return;
-  }
-  if (state === "REGISTRATION_SUCCESS" || state === "SESSION_SUCCESS") {
-    bodyEl.classList.add("theme-success");
     return;
   }
   bodyEl.classList.add("theme-dispense");
@@ -747,66 +605,25 @@ function typewriteAdvice(text) {
   }, 28);
 }
 
-function updateDispenseView(data) {
-  const user = data.active_user || {};
-  const uartStatus = data.last_uart_result?.status || data.last_uart_command?.status || "Pending";
-
-  if (dispenseUserName) {
-    dispenseUserName.textContent = user.name || "--";
-  }
-  if (dispenseMedication) {
-    dispenseMedication.textContent = user.medication || "--";
-  }
-  if (dispenseServoChannel) {
-    dispenseServoChannel.textContent = String(user.servo_channel || "--");
-  }
-  if (dispenseUartStatus) {
-    dispenseUartStatus.textContent = String(uartStatus);
-  }
+function updateWorkingView(data) {
+  adviceContainer.classList.add("hidden");
 
   if (data.state === "DISPENSING_PILL") {
-    if (dispenseTitle) {
-      dispenseTitle.textContent = user.name ? `Dispensing for ${user.name}` : "Dispensing Medication";
-    }
-    if (dispenseSubtitle) {
-      dispenseSubtitle.textContent = `Sending USB-UART command to ESP32. Status: ${uartStatus}`;
-    }
+    workingTitle.textContent = "Dispensing Medication";
+    workingSubtitle.textContent = `Sending USB-UART command. Status: ${data.last_uart_result?.status || "Pending"}`;
     return;
   }
 
-  if (dispenseTitle) {
-    dispenseTitle.textContent = "Dispensing Medication";
-  }
-  if (dispenseSubtitle) {
-    dispenseSubtitle.textContent = "Sending USB-UART command to ESP32.";
-  }
-}
-
-function updateAdviceView(data) {
-  const isGenerating = data.state === "GENERATING_ADVICE";
-  const isSpeaking = data.state === "SPEAKING_ADVICE";
-
-  adviceLoading?.classList.toggle("hidden", !isGenerating);
-  adviceContainer?.classList.toggle("hidden", !isSpeaking);
-
-  if (isGenerating) {
-    if (adviceTitle) {
-      adviceTitle.textContent = "Generating Advice";
-    }
-    if (adviceSubtitle) {
-      adviceSubtitle.textContent = "Preparing personalized guidance and voice playback.";
-    }
-    speechRemaining.textContent = "--";
+  if (data.state === "GENERATING_ADVICE") {
+    workingTitle.textContent = "Generating Advice";
+    workingSubtitle.textContent = "Preparing personalized suggestions.";
     return;
   }
 
-  if (isSpeaking) {
-    if (adviceTitle) {
-      adviceTitle.textContent = "Advice and Voice Playback";
-    }
-    if (adviceSubtitle) {
-      adviceSubtitle.textContent = "Review and listen to the recommendation.";
-    }
+  if (data.state === "SPEAKING_ADVICE") {
+    workingTitle.textContent = "Advice and Guidance";
+    workingSubtitle.textContent = "Review and listen to the recommendation.";
+    adviceContainer.classList.remove("hidden");
     speechRemaining.textContent =
       data.speech_seconds_remaining === null || data.speech_seconds_remaining === undefined
         ? "--"
@@ -814,45 +631,15 @@ function updateAdviceView(data) {
     return;
   }
 
-  adviceLoading?.classList.add("hidden");
-  adviceContainer?.classList.add("hidden");
-}
-
-function updateCompletionView(data) {
-  const remaining = data.auto_return_seconds === null || data.auto_return_seconds === undefined
-    ? "--"
-    : String(data.auto_return_seconds);
-
-  if (completionCountdown) {
-    completionCountdown.textContent = remaining;
-  }
-
-  if (data.state === "REGISTRATION_SUCCESS") {
-    if (completionTitle) {
-      completionTitle.textContent = "Registration Complete";
-    }
-    if (completionSubtitle) {
-      completionSubtitle.textContent = "Profile saved locally. Returning to standby.";
-    }
+  if (data.state === "SESSION_SUCCESS" || data.state === "REGISTRATION_SUCCESS") {
+    workingTitle.textContent = "Complete";
+    workingSubtitle.textContent = "Returning to standby.";
+    adviceContainer.classList.add("hidden");
     return;
   }
 
-  if (data.state === "SESSION_SUCCESS") {
-    if (completionTitle) {
-      completionTitle.textContent = "Dispense Complete";
-    }
-    if (completionSubtitle) {
-      completionSubtitle.textContent = "Medication session finished. Returning to standby.";
-    }
-    return;
-  }
-
-  if (completionTitle) {
-    completionTitle.textContent = "Complete";
-  }
-  if (completionSubtitle) {
-    completionSubtitle.textContent = "Returning to standby.";
-  }
+  workingTitle.textContent = "Working";
+  workingSubtitle.textContent = "Please wait.";
 }
 
 function ensureKnownUsers(users) {
@@ -907,11 +694,6 @@ function handleStateEntryEffects(data) {
     if (data.state === "REGISTER_NEW_USER") {
       speakText("Hi there. Please register to continue.");
     }
-    if (data.state === "GENERATING_ADVICE") {
-      resetTypewriter();
-      adviceText.textContent = "";
-      speechRemaining.textContent = "--";
-    }
     if (data.state === "WAITING_FOR_USER") {
       lastGreetingKey = "";
       lastAdviceKey = "";
@@ -941,7 +723,7 @@ function handleStateEntryEffects(data) {
     }
   }
 
-  if (data.state !== "SPEAKING_ADVICE") {
+  if (data.state !== "SPEAKING_ADVICE" && adviceContainer.classList.contains("hidden")) {
     speechRemaining.textContent = "--";
   }
 
@@ -949,9 +731,7 @@ function handleStateEntryEffects(data) {
 }
 
 async function renderStatus(data) {
-  lastStatusData = data;
-  const stateLabel = stateLabelMap[data.state] || data.state;
-  stateBadge.textContent = `STATE: ${stateLabel}`;
+  stateBadge.textContent = `STATE: ${data.state}`;
   phaseBadge.textContent = `PHASE: ${data.phase || "--"}`;
   setThemeByState(data.state);
   setImmersiveMode(data.state);
@@ -1006,13 +786,8 @@ async function renderStatus(data) {
     stopCamera();
   }
 
-  updateSceneFrame(data.state);
   switchView(data.state);
-  updateDispenseView(data);
-  updateAdviceView(data);
-  updateCompletionView(data);
-  bindSceneInteractions(data);
-  syncSceneContent(data);
+  updateWorkingView(data);
   handleStateEntryEffects(data);
 }
 
@@ -1144,13 +919,6 @@ if ("speechSynthesis" in window) {
   window.speechSynthesis.addEventListener("voiceschanged", pickVoice);
   pickVoice();
 }
-sceneFrame?.addEventListener("load", () => {
-  if (!lastStatusData) {
-    return;
-  }
-  bindSceneInteractions(lastStatusData);
-  syncSceneContent(lastStatusData);
-});
 setAudioReadyVisual(false);
 initializeGsapPrimitives();
 
@@ -1165,3 +933,7 @@ async function pollStatus() {
 
 setInterval(pollStatus, 1000);
 pollStatus();
+
+
+```
+

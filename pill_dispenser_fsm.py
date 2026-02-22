@@ -32,8 +32,10 @@ class PillDispenserFSM:
     def __init__(
         self,
         distance_threshold_m: float = 1.2,
-        success_display_seconds: int = 4,
+        success_display_seconds: int = 8,
         speech_duration_seconds: int = 12,
+        dispense_display_seconds: float = 4.0,
+        advice_generation_seconds: float = 1.2,
     ) -> None:
         self._lock = RLock()
         self._state = WorkflowState.WAITING_FOR_USER
@@ -43,6 +45,8 @@ class PillDispenserFSM:
         self._distance_threshold_m = distance_threshold_m
         self._success_display_seconds = success_display_seconds
         self._speech_duration_seconds = speech_duration_seconds
+        self._dispense_display_seconds = max(0.0, float(dispense_display_seconds))
+        self._advice_generation_seconds = max(0.0, float(advice_generation_seconds))
 
         self._current_distance_m: float | None = None
         self._active_user_id = ""
@@ -54,6 +58,8 @@ class PillDispenserFSM:
         self._is_speaking = False
         self._speech_ends_at: datetime | None = None
         self._auto_return_at: datetime | None = None
+        self._dispense_stage_ends_at: datetime | None = None
+        self._advice_generation_ends_at: datetime | None = None
 
         self._compute_node = "JETSON_LOCAL"
         self._camera_source = "REALSENSE_LOCAL"
@@ -210,25 +216,12 @@ class PillDispenserFSM:
                 result="SUCCESS",
                 details=f"uart={self._uart_transport} status={self._last_uart_result.get('status', 'UNKNOWN')}",
             )
-
-            self._transition(
-                WorkflowState.GENERATING_ADVICE,
-                "Dispense completed. Requesting Gemini health advice.",
-            )
-
-            self._advice_text = self._generate_health_advice(profile)
-            self._is_speaking = self._speak_advice(self._advice_text)
-            self._speech_ends_at = self._now() + timedelta(
-                seconds=self._speech_duration_seconds
-            )
-
-            self._transition(
-                WorkflowState.SPEAKING_ADVICE,
-                "Health advice ready and speaking has started.",
+            self._dispense_stage_ends_at = self._now() + timedelta(
+                seconds=self._dispense_display_seconds
             )
             return self._response(
                 True,
-                "Existing user recognized locally, pill dispensed over ESP32 path, and health advice speaking.",
+                "Existing user recognized locally. Dispensing UI active; advice will start after dispense stage completes.",
             )
 
     def register_new_user(self, payload: dict[str, Any]) -> dict:
@@ -502,11 +495,38 @@ class PillDispenserFSM:
         self._is_speaking = False
         self._speech_ends_at = None
         self._auto_return_at = None
+        self._dispense_stage_ends_at = None
+        self._advice_generation_ends_at = None
         self._transition(WorkflowState.ERROR, message)
         return self._response(False, message)
 
     def _maybe_auto_progress(self) -> None:
         now = self._now()
+        if self._state == WorkflowState.DISPENSING_PILL and self._dispense_stage_ends_at:
+            if now >= self._dispense_stage_ends_at:
+                self._dispense_stage_ends_at = None
+                self._transition(
+                    WorkflowState.GENERATING_ADVICE,
+                    "Dispense completed. Preparing health advice.",
+                )
+                self._advice_generation_ends_at = now + timedelta(
+                    seconds=self._advice_generation_seconds
+                )
+
+        if self._state == WorkflowState.GENERATING_ADVICE and self._advice_generation_ends_at:
+            if now >= self._advice_generation_ends_at:
+                self._advice_generation_ends_at = None
+                profile = self._active_user_profile or {}
+                self._advice_text = self._generate_health_advice(profile)
+                self._is_speaking = self._speak_advice(self._advice_text)
+                self._speech_ends_at = now + timedelta(
+                    seconds=self._speech_duration_seconds
+                )
+                self._transition(
+                    WorkflowState.SPEAKING_ADVICE,
+                    "Health advice ready and speaking has started.",
+                )
+
         if self._state == WorkflowState.SPEAKING_ADVICE and self._speech_ends_at:
             if now >= self._speech_ends_at:
                 self._is_speaking = False
@@ -627,6 +647,8 @@ class PillDispenserFSM:
         self._is_speaking = False
         self._speech_ends_at = None
         self._auto_return_at = None
+        self._dispense_stage_ends_at = None
+        self._advice_generation_ends_at = None
         if clear_error:
             self._last_error = ""
 
@@ -666,6 +688,8 @@ class PillDispenserFSM:
             "phase": self._phase_for_state(self._state),
             "last_error": self._last_error,
             "distance_threshold_m": self._distance_threshold_m,
+            "dispense_display_seconds_total": self._dispense_display_seconds,
+            "advice_generation_seconds_total": self._advice_generation_seconds,
             "current_distance_m": self._current_distance_m,
             "active_user": active_user,
             "last_recognition": self._last_recognition,
@@ -681,6 +705,8 @@ class PillDispenserFSM:
             "is_speaking": self._is_speaking,
             "speech_seconds_remaining": self._seconds_until(self._speech_ends_at, now),
             "auto_return_seconds": self._seconds_until(self._auto_return_at, now),
+            "dispense_seconds_remaining": self._seconds_until(self._dispense_stage_ends_at, now),
+            "advice_generation_seconds_remaining": self._seconds_until(self._advice_generation_ends_at, now),
             "known_users": self._list_known_users(),
             "can_start_monitoring": self._state == WorkflowState.WAITING_FOR_USER,
             "can_submit_distance": self._state == WorkflowState.MONITORING_DISTANCE,

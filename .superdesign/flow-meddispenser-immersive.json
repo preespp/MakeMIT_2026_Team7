@@ -1,0 +1,34 @@
+[
+  {
+    "title": "Idle Welcome",
+    "prompt": "Create an immersive full-screen idle state. Show cute blinking mascot eyes as the visual anchor, deep gradient background, and minimal copy. No top header action buttons. Keep optional diagnostics hidden in a left drawer trigger only."
+  },
+  {
+    "title": "Wake and Detection Transition",
+    "prompt": "Design the transition from idle to monitoring when a person approaches. Eyes react (open wider), then morph into a scanning motif. Use a stylized gradient transition and subtle tech wake cue. Keep interaction clean and cinematic."
+  },
+  {
+    "title": "Local Face Recognition",
+    "prompt": "Design a local recognition page for Jetson + RealSense flow. Include clear recognition status, existing-user and new-user branch controls for prototype simulation, and high-contrast readability. Keep top area clean with no action buttons."
+  },
+  {
+    "title": "New User Registration",
+    "prompt": "Design a guided registration page with clear fields: name, age, medication, dosage, servo channel, and face capture preview. Keep forms large and touch-friendly. Maintain visual continuity with mascot/system style."
+  },
+  {
+    "title": "Dispensing and Greeting",
+    "prompt": "Design dispensing state with motion focus. Show a clear status indicator for USB-UART dispense action and display a warm greeting banner: Hello, {name}. Preserve minimal chrome and emphasize trust/safety."
+  },
+  {
+    "title": "Advice and Voice Playback",
+    "prompt": "Design advice state where generated health guidance appears with readable hierarchy and optional typewriter reveal. Include speech playback context and remaining timer. Keep controls simple and obvious on touch screen."
+  },
+  {
+    "title": "Completion Return to Idle",
+    "prompt": "Design completion feedback with friendly confirmation and smooth return to immersive idle eyes state. Keep motion calm, lightweight, and reassuring."
+  },
+  {
+    "title": "Fault and Recovery",
+    "prompt": "Design an error/fault state with strong visual contrast, concise explanation, and clear recovery action. Keep it consistent with the system style and suitable for kiosk operation."
+  }
+]

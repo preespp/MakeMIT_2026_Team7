@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "locked_at_utc": "2026-02-22T02:00:00Z",
+  "project_id": "8c40ccc4-b1b3-400a-9ae7-4214167ace06",
+  "flow_seed_draft_id": "d4f4bc2b-3e17-4686-8636-c602071d51e0",
+  "flow_seed_title": "Minimal Clean Kiosk Interface",
+  "notes": [
+    "Canonical UI flow selected by team from SuperDesign outputs.",
+    "Use these draft IDs as the primary source for future iterations.",
+    "SuperDesign web UI may still display historical drafts; this file is the repo-level source of truth."
+  ],
+  "fsm_flow_pages": [
+    {
+      "order": 1,
+      "state": "WAITING_FOR_USER",
+      "title": "Idle Welcome",
+      "draft_id": "8b87efff-fb72-4721-a34b-ac41902de7ce",
+      "preview_url": "https://p.superdesign.dev/draft/8b87efff-fb72-4721-a34b-ac41902de7ce"
+    },
+    {
+      "order": 2,
+      "state": "MONITORING_DISTANCE",
+      "title": "Wake and Detection Transition",
+      "draft_id": "121d029f-8063-4cac-8027-18b4ffd39b31",
+      "preview_url": "https://p.superdesign.dev/draft/121d029f-8063-4cac-8027-18b4ffd39b31"
+    },
+    {
+      "order": 3,
+      "state": "FACE_RECOGNITION",
+      "title": "Local Face Recognition",
+      "draft_id": "cbdc8e91-dbfd-485c-bac0-2e722b8bc0de",
+      "preview_url": "https://p.superdesign.dev/draft/cbdc8e91-dbfd-485c-bac0-2e722b8bc0de"
+    },
+    {
+      "order": 4,
+      "state": "REGISTER_NEW_USER",
+      "title": "New User Registration",
+      "draft_id": "24912278-51ec-4a19-bf42-df86610ae269",
+      "preview_url": "https://p.superdesign.dev/draft/24912278-51ec-4a19-bf42-df86610ae269"
+    },
+    {
+      "order": 5,
+      "state": "DISPENSING_PILL",
+      "title": "Dispensing and Greeting",
+      "draft_id": "c3647a52-abcb-4e00-b2aa-00baf1df56af",
+      "preview_url": "https://p.superdesign.dev/draft/c3647a52-abcb-4e00-b2aa-00baf1df56af"
+    },
+    {
+      "order": 6,
+      "state": "SPEAKING_ADVICE",
+      "title": "Advice and Voice Playback",
+      "draft_id": "c4c6bb0e-8ec1-4358-aec1-1505acf46fb4",
+      "preview_url": "https://p.superdesign.dev/draft/c4c6bb0e-8ec1-4358-aec1-1505acf46fb4"
+    },
+    {
+      "order": 7,
+      "state": "SESSION_SUCCESS",
+      "title": "Completion Return to Idle",
+      "draft_id": "6927c10b-6fe1-4cdb-ab37-72baa16dee48",
+      "preview_url": "https://p.superdesign.dev/draft/6927c10b-6fe1-4cdb-ab37-72baa16dee48"
+    },
+    {
+      "order": 8,
+      "state": "ERROR",
+      "title": "Fault and Recovery",
+      "draft_id": "5aa2b513-d976-4f06-9a6b-30ac751ec71b",
+      "preview_url": "https://p.superdesign.dev/draft/5aa2b513-d976-4f06-9a6b-30ac751ec71b"
+    }
+  ],
+  "iteration_hints": {
+    "windows_cli_prefix": "cmd /c superdesign",
+    "single_page_branch_example": "cmd /c superdesign iterate-design-draft --draft-id 8b87efff-fb72-4721-a34b-ac41902de7ce -p \"more playful eyes animation\" --mode branch --context-file templates/index.html",
+    "single_page_replace_example": "cmd /c superdesign iterate-design-draft --draft-id cbdc8e91-dbfd-485c-bac0-2e722b8bc0de -p \"simplify recognition controls and increase touch targets\" --mode replace --context-file templates/index.html"
+  }
+}

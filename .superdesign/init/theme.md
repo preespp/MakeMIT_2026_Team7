@@ -1,3 +1,15 @@
+﻿# theme.md
+
+## Design Tokens and Global Styles
+- Token source: `:root` variables in `static/css/style.css`
+- Typography: Trebuchet/Gill Sans/Verdana stack
+- Layout style: immersive gradient stage + glassmorphism surfaces
+- Motion style: CSS keyframes + GSAP transform/opacity transitions
+- No Tailwind config in this repo
+
+### `static/css/style.css`
+
+```css
 :root {
   --bg-1: #0c2044;
   --bg-2: #1c3f75;
@@ -61,12 +73,6 @@ body.theme-dispense {
   --bg-3: #66b874;
 }
 
-body.theme-success {
-  --bg-1: #102f4c;
-  --bg-2: #225b79;
-  --bg-3: #3f9a8a;
-}
-
 body.theme-error {
   --bg-1: #4f1421;
   --bg-2: #7f1b2a;
@@ -120,6 +126,12 @@ body.theme-error {
   box-shadow: 0 0 11px rgba(255, 109, 118, 0.88);
 }
 
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 body.immersive-mode .app-header {
   opacity: 0;
   transform: translateY(-14px);
@@ -127,7 +139,9 @@ body.immersive-mode .app-header {
 }
 
 body.immersive-mode .debug-toggle-btn {
-  opacity: 0.7;
+  opacity: 0;
+  transform: translateY(-12px);
+  pointer-events: none;
 }
 
 body.immersive-mode .app-layout {
@@ -188,28 +202,6 @@ body.immersive-mode .main-view-container {
   min-height: calc(100vh - 115px);
 }
 
-.scene-frame-wrap {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  border-radius: inherit;
-  overflow: hidden;
-  background: #0c2044;
-}
-
-.scene-frame {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  display: block;
-  background: #0c2044;
-}
-
-.main-view-container.scene-shell-active .view {
-  opacity: 0 !important;
-  pointer-events: none !important;
-}
-
 .debug-panel {
   position: fixed;
   top: 0;
@@ -244,26 +236,23 @@ body.immersive-mode .main-view-container {
 
 .debug-toggle-btn {
   position: fixed;
-  left: 0;
-  top: 50%;
+  left: 14px;
+  top: 98px;
   z-index: 31;
   border: 1px solid var(--border);
-  border-left: none;
-  border-radius: 0 999px 999px 0;
-  padding: 0.5rem 0.86rem 0.5rem 0.72rem;
+  border-radius: 999px;
+  padding: 0.48rem 0.88rem;
   font-weight: 700;
   letter-spacing: 0.01em;
   color: #ebf8ff;
   background: rgba(9, 21, 45, 0.62);
   backdrop-filter: blur(8px);
   cursor: pointer;
-  transform: translate(-18%, -50%);
-  transition: transform 0.18s ease, opacity 0.2s ease, background-color 0.2s ease;
+  transition: transform 0.15s ease, opacity 0.2s ease;
 }
 
 .debug-toggle-btn:hover {
-  transform: translate(-4%, -50%);
-  background: rgba(12, 28, 58, 0.76);
+  transform: translateY(-1px);
 }
 
 .debug-scrim {
@@ -660,37 +649,6 @@ body.theme-recognition .pupil {
   margin: 1.25rem 0;
 }
 
-.status-card {
-  width: min(560px, 92%);
-  border: 1px solid rgba(171, 230, 214, 0.26);
-  border-radius: 14px;
-  background: rgba(17, 49, 45, 0.42);
-  padding: 0.85rem 1rem;
-  text-align: left;
-}
-
-.status-card-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.65rem;
-  align-items: center;
-  padding: 0.46rem 0;
-  border-bottom: 1px solid rgba(176, 239, 213, 0.14);
-  font-size: 0.92rem;
-}
-
-.status-card-row:last-child {
-  border-bottom: none;
-}
-
-.status-card-row span {
-  color: var(--text-muted);
-}
-
-.status-card-row strong {
-  color: #e8fff5;
-}
-
 .advice-card {
   width: min(600px, 92%);
   margin-top: 1rem;
@@ -711,27 +669,6 @@ body.theme-recognition .pupil {
 
 .text-accent {
   color: #bdf9e3;
-}
-
-.completion-mark {
-  width: 92px;
-  height: 92px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  margin-bottom: 0.8rem;
-  font-size: 2.2rem;
-  font-weight: 800;
-  color: #d9fff4;
-  border: 1px solid rgba(131, 239, 202, 0.36);
-  background:
-    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.12), transparent 55%),
-    rgba(22, 86, 75, 0.52);
-  box-shadow: 0 0 0 8px rgba(83, 212, 173, 0.08);
-}
-
-.completion-countdown {
-  margin-top: 0.35rem;
 }
 
 .metric-row {
@@ -777,10 +714,6 @@ body.theme-recognition .pupil {
 .micro-text {
   font-size: 0.82rem;
   color: var(--text-muted);
-}
-
-#audioUnlockBtn {
-  width: 100%;
 }
 
 .error-text {
@@ -843,11 +776,9 @@ body.theme-recognition .pupil {
   }
 
   .debug-toggle-btn {
-    top: 84px;
-    transform: translate(-6%, 0);
-  }
-
-  .debug-toggle-btn:hover {
-    transform: translate(0, 0);
+    top: 76px;
   }
 }
+
+
+```

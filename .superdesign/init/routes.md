@@ -1,33 +1,31 @@
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+﻿# routes.md
+
+## Route Map (Flask)
+
+- `/` -> `home()` -> renders `templates/index.html`
+- `/health` -> `health()`
+- `/api/status` -> `api_status()`
+- `/api/users` -> `api_users()`
+- `/api/start` and `/api/start-monitoring` -> `api_start_monitoring()`
+- `/api/distance` -> `api_distance()`
+- `/api/recognition` and `/api/recognition/local` -> `api_recognition()`
+- `/api/register` -> `api_register()`
+- `/api/stop-advice` -> `api_stop_advice()`
+- `/api/med/dispense` -> `api_med_dispense()`
+- `/api/advice/gemini` -> `api_advice_gemini()`
+- `/api/reset` -> `api_reset()`
+
+## Full Router Source
+
+### `app.py`
+
+```python
+from flask import Flask, jsonify, render_template, request
 
 from pill_dispenser_fsm import PillDispenserFSM
 
 app = Flask(__name__)
 fsm = PillDispenserFSM()
-
-SCENE_TEMPLATES = {
-    "idle": "Idle Welcome.html",
-    "wake": "Wake and Detection Transition.html",
-    "recognition": "Local Face Recognition.html",
-    "register": "New User Registration.html",
-    "dispense": "Dispensing & Greeting.html",
-    "advice": "Advice and Voice Playback.html",
-    "completion": "Completion Return to Idle.html",
-    "fault": "Fault and Recovery.html",
-}
-
-STATE_TO_SCENE = {
-    "WAITING_FOR_USER": "idle",
-    "MONITORING_DISTANCE": "wake",
-    "FACE_RECOGNITION": "recognition",
-    "REGISTER_NEW_USER": "register",
-    "DISPENSING_PILL": "dispense",
-    "GENERATING_ADVICE": "advice",
-    "SPEAKING_ADVICE": "advice",
-    "REGISTRATION_SUCCESS": "completion",
-    "SESSION_SUCCESS": "completion",
-    "ERROR": "fault",
-}
 
 
 def _handle_local_recognition(payload: dict) -> dict:
@@ -55,22 +53,7 @@ def _handle_local_recognition(payload: dict) -> dict:
 
 @app.get("/")
 def home():
-    state = str(fsm.status().get("state", "WAITING_FOR_USER"))
-    slug = STATE_TO_SCENE.get(state, "idle")
-    return redirect(url_for("ui_scene", slug=slug))
-
-
-@app.get("/dashboard")
-def dashboard_shell():
     return render_template("index.html")
-
-
-@app.get("/ui-scene/<slug>")
-def ui_scene(slug: str):
-    template_name = SCENE_TEMPLATES.get(str(slug).strip().lower())
-    if not template_name:
-        return jsonify(ok=False, message="Unknown scene slug."), 404
-    return render_template(template_name)
 
 
 @app.get("/health")
@@ -150,3 +133,6 @@ def api_reset():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
+
+```

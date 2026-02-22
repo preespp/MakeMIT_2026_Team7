@@ -1,3 +1,15 @@
+# layouts.md
+
+## Layout Source
+This project uses a single app-shell layout inside `templates/index.html` with:
+- top header (`.app-header`)
+- immersive main stage (`#mainStage`)
+- overlay/banner layers (`#transitionOverlay`, `#helloBanner`)
+- debug drawer (`#debugPanel`) and scrim (`#debugScrim`)
+
+### `templates/index.html`
+
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -13,26 +25,20 @@
       <h1>Sauron <span class="fw-light">MedDispenser</span></h1>
     </div>
 
-    <div class="system-badges">
-      <span class="badge" id="phaseBadge">PHASE: --</span>
-      <span class="badge" id="stateBadge">STATE: --</span>
+    <div class="header-controls">
+      <div class="system-badges">
+        <span class="badge" id="phaseBadge">PHASE: --</span>
+        <span class="badge" id="stateBadge">STATE: --</span>
+      </div>
+      <button id="audioUnlockBtn" class="btn btn-outline btn-sm" type="button">Enable Voice</button>
     </div>
   </header>
 
   <main class="app-layout">
-    <section class="main-view-container scene-shell-active" id="mainStage">
+    <section class="main-view-container" id="mainStage">
       <div id="transitionOverlay" class="transition-overlay"></div>
       <div id="helloBanner" class="hello-banner">
         <p id="helloText">Hello</p>
-      </div>
-      <div class="scene-frame-wrap" id="sceneFrameWrap">
-        <iframe
-          id="sceneFrame"
-          class="scene-frame"
-          title="FSM Scene"
-          src="/ui-scene/idle"
-          loading="eager"
-        ></iframe>
       </div>
 
       <div id="startView" class="view active">
@@ -130,27 +136,11 @@
         </div>
       </div>
 
-      <div id="dispenseView" class="view">
+      <div id="workingView" class="view">
         <div class="view-content center-content">
-          <h2 id="dispenseTitle">Dispensing Medication</h2>
-          <p class="subtitle" id="dispenseSubtitle">Sending USB-UART command to ESP32.</p>
+          <h2 id="workingTitle">Dispensing...</h2>
+          <p class="subtitle" id="workingSubtitle">Preparing hardware action.</p>
           <div class="spinner"></div>
-
-          <div class="status-card">
-            <div class="status-card-row"><span>User</span><strong id="dispenseUserName">--</strong></div>
-            <div class="status-card-row"><span>Medication</span><strong id="dispenseMedication">--</strong></div>
-            <div class="status-card-row"><span>Servo Channel</span><strong id="dispenseServoChannel">--</strong></div>
-            <div class="status-card-row"><span>UART Result</span><strong id="dispenseUartStatus">Pending</strong></div>
-          </div>
-        </div>
-      </div>
-
-      <div id="adviceView" class="view">
-        <div class="view-content center-content">
-          <h2 id="adviceTitle">Generating Advice</h2>
-          <p class="subtitle" id="adviceSubtitle">Preparing personalized guidance.</p>
-
-          <div id="adviceLoading" class="spinner"></div>
 
           <div id="adviceContainer" class="advice-card hidden">
             <h3>Health Advice</h3>
@@ -158,17 +148,6 @@
             <p class="micro-text text-accent">Auto-closing in <span id="speechRemaining">--</span>s</p>
             <button id="stopAdviceBtn" class="btn btn-outline btn-sm" type="button">Acknowledge</button>
           </div>
-        </div>
-      </div>
-
-      <div id="completionView" class="view">
-        <div class="view-content center-content">
-          <div class="completion-mark" aria-hidden="true">✓</div>
-          <h2 id="completionTitle">Complete</h2>
-          <p class="subtitle" id="completionSubtitle">Returning to standby.</p>
-          <p class="micro-text completion-countdown">
-            Return to idle in <span id="completionCountdown">--</span>s
-          </p>
         </div>
       </div>
 
@@ -183,7 +162,7 @@
     </section>
   </main>
 
-  <button id="debugToggleBtn" class="debug-toggle-btn" type="button">Panel</button>
+  <button id="debugToggleBtn" class="debug-toggle-btn" type="button">System Panel</button>
   <div id="debugScrim" class="debug-scrim"></div>
   <aside id="debugPanel" class="debug-panel">
     <div class="drawer-header">
@@ -202,12 +181,6 @@
       </form>
     </div>
 
-    <div class="simulator-box">
-      <h4>Voice Output</h4>
-      <button id="audioUnlockBtn" class="btn btn-outline btn-sm" type="button">Enable Voice</button>
-      <p class="micro-text">Unlock browser speech for greeting and advice playback.</p>
-    </div>
-
     <h4>FSM History</h4>
     <ul id="historyList" class="history-list"></ul>
   </aside>
@@ -216,3 +189,7 @@
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>
+
+
+```
+
