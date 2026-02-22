@@ -28,6 +28,14 @@
 
 #define SERVO_FREQ         50
 #define SERVO_RESOLUTION   LEDC_TIMER_16_BIT
+#define SERVO_PERIOD_US    20000
+
+// Calibrate these to your servo datasheet / measured travel.
+// Many servos need wider than 1000-2000us to reach full motion.
+#define SERVO_MIN_PULSE_US 500
+#define SERVO_MAX_PULSE_US 2500
+#define SERVO_MAX_ANGLE_DEG 180
+#define SERVO_STEP_COUNT    40
 
 #define MOVE_DURATION_MS   1000
 #define SHAKE_COUNT        3
@@ -39,26 +47,30 @@ typedef struct {
 } servo_t;
 
 servo_t servos[4];
+static const int servo_pins[4] = {SERVO_PIN_1, SERVO_PIN_2, SERVO_PIN_3, SERVO_PIN_4};
 
 // Helper: map angle to duty for LEDC
 static uint32_t angle_to_duty(int angle)
 {
-    // 0° -> 1ms, 180° -> 2ms on 20ms period
-    // Duty range: 0 - 2^16-1
-    uint32_t min_duty = (uint32_t)((65535 * 1) / 20); // 1 ms
-    uint32_t max_duty = (uint32_t)((65535 * 2) / 20); // 2 ms
-    return min_duty + (angle * (max_duty - min_duty)) / 180;
+    if (angle < 0) angle = 0;
+    if (angle > SERVO_MAX_ANGLE_DEG) angle = SERVO_MAX_ANGLE_DEG;
+
+    uint32_t pulse_us = SERVO_MIN_PULSE_US +
+        ((uint32_t)angle * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)) / SERVO_MAX_ANGLE_DEG;
+
+    // Map pulse width (us) to LEDC duty over a 20 ms period.
+    return (pulse_us * ((1U << 16) - 1)) / SERVO_PERIOD_US;
 }
 
 // Move servo 0->180->0
 static void move_servo(servo_t* s)
 {
-    int steps = 20;
+    int steps = SERVO_STEP_COUNT;
     int step_delay = MOVE_DURATION_MS / (2 * steps);
 
     // 0 -> 180
     for (int i = 0; i <= steps; i++) {
-        uint32_t duty = angle_to_duty((i * 180) / steps);
+        uint32_t duty = angle_to_duty((i * SERVO_MAX_ANGLE_DEG) / steps);
         ledc_set_duty(LEDC_HIGH_SPEED_MODE, s->channel, duty);
         ledc_update_duty(LEDC_HIGH_SPEED_MODE, s->channel);
         vTaskDelay(pdMS_TO_TICKS(step_delay));
@@ -66,32 +78,19 @@ static void move_servo(servo_t* s)
 
     // 180 -> 0
     for (int i = 0; i <= steps; i++) {
-        uint32_t duty = angle_to_duty(180 - (i * 180) / steps);
+        uint32_t duty = angle_to_duty(SERVO_MAX_ANGLE_DEG - (i * SERVO_MAX_ANGLE_DEG) / steps);
         ledc_set_duty(LEDC_HIGH_SPEED_MODE, s->channel, duty);
         ledc_update_duty(LEDC_HIGH_SPEED_MODE, s->channel);
         vTaskDelay(pdMS_TO_TICKS(step_delay));
     }
-
-    // Shake after each move
-    for (int i = 0; i < SHAKE_COUNT; i++) {
-        ledc_set_duty(LEDC_HIGH_SPEED_MODE, s->channel, angle_to_duty(0));
-        ledc_update_duty(LEDC_HIGH_SPEED_MODE, s->channel);
-        vTaskDelay(pdMS_TO_TICKS(SHAKE_SPEED_MS));
-        ledc_set_duty(LEDC_HIGH_SPEED_MODE, s->channel, angle_to_duty(20));
-        ledc_update_duty(LEDC_HIGH_SPEED_MODE, s->channel);
-        vTaskDelay(pdMS_TO_TICKS(SHAKE_SPEED_MS));
-    }
-    // Return to 0
-    ledc_set_duty(LEDC_HIGH_SPEED_MODE, s->channel, angle_to_duty(0));
-    ledc_update_duty(LEDC_HIGH_SPEED_MODE, s->channel);
 }
 
 // Map pill key to servo index
 static int pill_to_index(const char* pill) {
-    if (strcmp(pill, "pill1") == 0) return 0;
-    if (strcmp(pill, "pill2") == 0) return 1;
-    if (strcmp(pill, "pill3") == 0) return 2;
-    if (strcmp(pill, "pill4") == 0) return 3;
+    if (strcmp(pill, "Vitamin C") == 0) return 0;
+    if (strcmp(pill, "Fish Oil") == 0) return 1;
+    if (strcmp(pill, "Vitamin B") == 0) return 2;
+    if (strcmp(pill, "Tylenol") == 0) return 3;
     return -1;
 }
 
@@ -296,7 +295,7 @@ void app_main(void)
         ledc_channel_config_t ledc_channel = {
             .channel = servos[i].channel,
             .duty = angle_to_duty(0),
-            .gpio_num = SERVO_PIN_1 + i, // pins 18,19,21,22
+            .gpio_num = servo_pins[i],
             .speed_mode = LEDC_HIGH_SPEED_MODE,
             .hpoint = 0,
             .timer_sel = LEDC_TIMER_0

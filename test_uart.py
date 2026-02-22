@@ -74,12 +74,12 @@ def send_pill_command(pill_counts, protocol=DEFAULT_PROTOCOL):
 
 if __name__ == "__main__":
     # Example command: actuate servos 1-4
-    pill_cmd = {"pill1": 2, "pill2": 1, "pill3": 0, "pill4": 3}
-    response = send_pill_command(pill_cmd, protocol=DEFAULT_PROTOCOL)
+    pill_cmd = {"Vitamin C": 2, "Fish Oil": 5, "Vitamin B": 0, "Tylenol": 3}
+    response = send_pill_command(pill_cmd)
     print("Final response:", response)
 
     # You can loop and test multiple times
     time.sleep(10)
-    pill_cmd = {"pill1": 1, "pill2": 0, "pill3": 2, "pill4": 1}
-    response = send_pill_command(pill_cmd, protocol=DEFAULT_PROTOCOL)
+    pill_cmd = {"Vitamin C": 1, "Fish Oil": 10, "Vitamin B": 2, "Tylenol": 1}
+    response = send_pill_command(pill_cmd)
     print("Final response:", response)
