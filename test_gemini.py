@@ -1,87 +1,49 @@
-import os
-from dotenv import load_dotenv
-import google.generativeai as genai
-
-# Load .env file
-load_dotenv()
-
-# Get API key from environment
-api_key = os.getenv("GEMINI_API_KEY")
-
-if not api_key:
-    raise ValueError("API key not found!")
-
-genai.configure(api_key=api_key)
-
-model = genai.GenerativeModel("gemini-2.5-flash")
-response = model.generate_content("Hello Gemini")
-
-print(response.text)
-
 import json
-import os
+from pathlib import Path
 
-BASE_DIR = "general_data"
+from advice_engine import build_gemini_advice_prompt, generate_advice_payload, load_general_context
 
-def load_json(filename):
-    path = os.path.join(BASE_DIR, filename)
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return {}
 
-weather = load_json("weather.json")
-air = load_json("air_quality.json")
-sun = load_json("sun.json")
-moon = load_json("moon.json")
-alerts = load_json("alerts.json")
-time_info = load_json("time.json")
+def local_fallback(profile):
+    medication = str(profile.get("medication", "your medication")).strip() or "your medication"
+    return {
+        "medication": medication,
+        "side_effects": ["drowsiness", "stomach discomfort", "mild headache"],
+        "advice": "Drink more water and avoid intense activity if you feel unwell.",
+        "source": "local_rule_engine",
+    }
 
-prompt = f"""
-Hello Gemini! Here is the current environment information:
 
-- Date/Time: {time_info.get('datetime', 'N/A')}
-- Temperature: {weather.get('current_weather', {}).get('temperature_2m', 'N/A')} °C
-- Wind: {weather.get('current_weather', {}).get('wind_speed_10m', 'N/A')} m/s, {weather.get('current_weather', {}).get('wind_direction_10m', 'N/A')}°
-- Precipitation: {weather.get('current_weather', {}).get('precipitation', 'N/A')} mm
-- Air Quality Index (US AQI): {air.get('current', {}).get('us_aqi', 'N/A')}
-- PM2.5: {air.get('current', {}).get('pm2_5', 'N/A')}
-- PM10: {air.get('current', {}).get('pm10', 'N/A')}
-- Sunrise: {sun.get('results', {}).get('sunrise', 'N/A')}
-- Sunset: {sun.get('results', {}).get('sunset', 'N/A')}
-- Moon Phase: {moon.get('moonphase', 'N/A')}
-- Alerts: {alerts.get('features', [])[:3]}  # show up to 3 alerts
+def load_sample_profile():
+    users_dir = Path("data") / "users"
+    for path in sorted(users_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return {
+        "id": "demo-user",
+        "name": "Demo User",
+        "age": "65",
+        "medication": "Ibuprofen",
+        "dosage": "2 pills",
+        "servo_channel": 1,
+        "schedule_times": ["08:00"],
+    }
 
-Please provide **general advice for their daily general health and well-being for this user** based on the current environment (e.g., outdoor safety, visibility, allergies, or general precautions).
-"""
 
-# Load API key
-load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    raise ValueError("API key not found!")
+if __name__ == "__main__":
+    profile = load_sample_profile()
+    ctx = load_general_context()
 
-genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-2.5-flash")
+    prompt = build_gemini_advice_prompt(profile, ctx)
+    print("=== Gemini Prompt (strict_json_v1) ===")
+    print(prompt)
+    print()
 
-# Generate advice
-response = model.generate_content(prompt)
-print(response.text)
+    payload = generate_advice_payload(profile, fallback_builder=local_fallback, general_context=ctx)
+    print("=== Advice Payload ===")
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-# import os
-# from dotenv import load_dotenv
-# import google.generativeai as genai
-
-# # Load API key
-# load_dotenv()
-# api_key = os.getenv("GEMINI_API_KEY")
-# if not api_key:
-#     raise ValueError("API key not found!")
-
-# genai.configure(api_key=api_key)
-# model = genai.GenerativeModel("gemini-2.5-flash")
-
-# # Generate advice
-# response = model.generate_content(prompt)
-# print("=== Gemini Advice ===")
-# print(response.text)

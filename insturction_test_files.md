@@ -41,26 +41,27 @@ This will create the `general_data` folder (if not already present) and populate
 
 ### 2. `test_gemini.py`
 
-This script reads the environment JSON data from `general_data/` and sends it to **Google Gemini** to generate **daily general health advice** based on current conditions.
+This script now reuses the same backend advice logic as the Flask API (`advice_engine.py`):
+
+- builds the same strict JSON Gemini prompt (`strict_json_v1`)
+- loads environment JSON from `general_data/`
+- attempts Gemini generation (if configured)
+- validates/parses strict JSON
+- falls back to local rule-based advice if Gemini is unavailable or invalid
 
 **Steps performed:**
 
-1. Load JSON files produced by `test_general_info.py`.
-2. Build a prompt containing:
-
-   * Date/time
-   * Temperature, wind, precipitation
-   * Air quality (US AQI, PM2.5, PM10)
-   * Sunrise/sunset, moon phase
-   * Weather alerts
-3. Send the prompt to Gemini AI (`gemini-2.5-flash`) and print the response.
+1. Load a sample user profile (from `data/users/*.json` if available).
+2. Load environment JSON files from `general_data/`.
+3. Build the backend Gemini prompt with strict JSON output requirements.
+4. Generate and print a normalized advice payload.
 
 **Usage:**
 
-1. Install Gemini AI Python library:
+1. Install project requirements (includes `google-genai`; backend also supports fallback local advice if no key is set):
 
 ```bash
-pip install google-generativeai python-dotenv
+pip install -r requirements.txt
 ```
 
 2. Create a `.env` file with your Gemini API key:
@@ -75,17 +76,20 @@ GEMINI_API_KEY=your_api_key_here
 python test_gemini.py
 ```
 
-4. Output: Health advice printed to the terminal.
+4. Output:
+
+- generated prompt (for inspection)
+- normalized JSON advice payload (`gemini` source or `local_rule_engine` fallback)
 
 ---
 
 ## Requirements
 
 * Python 3.9+
-* Libraries:
+* Libraries (project-level):
 
 ```bash
-pip install requests beautifulsoup4 pytz google-generativeai python-dotenv
+pip install -r requirements.txt
 ```
 
 ---
@@ -93,7 +97,7 @@ pip install requests beautifulsoup4 pytz google-generativeai python-dotenv
 ## How It Works Together
 
 1. Run `test_general_info.py` to **fetch and save environment data**.
-2. Run `test_gemini.py` to **generate personalized daily advice** using the saved data.
+2. Run `test_gemini.py` to validate the backend-style prompt + JSON parsing flow.
 3. You can schedule `test_general_info.py` via cron or Windows Task Scheduler to keep your JSON data updated.
 
 ---
@@ -109,6 +113,9 @@ TIMEZONE = "America/New_York"
 ```
 
 * **Gemini API Key**: Stored in `.env` as `GEMINI_API_KEY`.
+* **Optional flags**:
+  * `ENABLE_GEMINI_ADVICE=0` to force local fallback
+  * `GEMINI_MODEL=gemini-2.5-flash` (default)
 
 ---
 

@@ -51,6 +51,22 @@ Build a medication dispenser where identity is verified locally on Jetson using 
 - Provide UI status endpoints.
 - Provide optional advice endpoint (Gemini or local fallback rules).
 
+### 4.4 Prototype vs Target (Implementation Status)
+
+Current prototype (implemented):
+
+- FSM + Flask API + touchscreen web scenes are integrated.
+- RealSense/InsightFace local recognition exists and is local-first.
+- RealSense-to-FSM API adapter exists for `start/distance/recognition` event bridging.
+- User storage is unified at `data/users/*.json` (profiles) and `data/embeddings/*.json` (embeddings).
+- Gemini advice endpoint supports strict JSON parsing with local fallback.
+
+Target (not fully implemented yet):
+
+- Full RealSense registration flow posting directly into FSM `/api/register` with camera photo payload.
+- Production UART serial transport + ACK/NACK error handling against ESP32 firmware.
+- Full prescription scheduling data model and multi-med dispense planning.
+
 ## 5. FSM Logic (Code-Aligned)
 
 Detailed internal states:
@@ -93,6 +109,11 @@ User-facing grouped states:
 - Registration form should include medication-to-servo mapping (channel 1-4).
 - Dispensing status should show UART/ESP32 context in text feedback.
 
+Implementation note:
+
+- The current 8 exported SuperDesign pages are the primary UI path (`/ui-scene/*`).
+- `templates/index.html` / `static/js/app.js` is a legacy shell/debug path (`/dashboard`) and not the primary kiosk flow.
+
 ## 7. Interface Contracts
 
 ### 7.1 Jetson UI/API (Prototype)
@@ -102,6 +123,33 @@ accept local recognition result (`new` or `existing` + optional user id).
 - `POST /api/register`: store user profile and face snapshot metadata.
 - `POST /api/med/dispense`: write dispense log and result.
 - `POST /api/advice/gemini`: return structured advice payload.
+- `POST /api/advice`: alias of the above for provider-neutral frontend integration.
+
+### 7.1.1 Canonical Registration Schema (Current Prototype)
+
+Canonical profile fields currently used by Flask FSM + frontend:
+
+- required: `name`, `medication`, `servo_channel`, `photo_data_url`
+- optional: `age`, `dosage`, `notes`, `schedule_times`, `medications`
+
+Canonical storage:
+
+- profile: `data/users/<user_id>.json`
+- face photo: `data/faces/<user_id>.jpg`
+- embedding (RealSense/InsightFace): `data/embeddings/<user_id>.json`
+
+Compatibility note:
+
+- Legacy `data/users.json` (RealSense old format) is imported/upserted into canonical storage.
+
+### 7.1.2 RealSense -> Flask Event Payload (Current Bridge)
+
+`POST /api/recognition/local`
+
+- existing user:
+  - `{"match_type":"existing","user_id":"<user_id>","source":"REALSENSE_LOCAL","confidence":0.93}`
+- new user:
+  - `{"match_type":"new","source":"REALSENSE_LOCAL","confidence":0.20}`
 
 ### 7.2 Jetson -> ESP32 UART Contract (Target)
 
@@ -118,6 +166,13 @@ Expected ESP32 response fields:
 - `ack`: `true/false`
 - `request_id`
 - `status`: `OK` or error code (`JAM`, `TIMEOUT`, `BAD_CHANNEL`, `LOW_POWER`)
+
+Prototype frame contract (implemented placeholder in FSM):
+
+- `SAURON_UART_V1`
+- 4 channel count fields in one frame (one count per servo channel)
+- checksum byte
+- allows ESP32 to execute per-channel action counts derived from `servo_channel` + `dosage`
 
 ## 8. Data Model (Prototype)
 
@@ -137,6 +192,10 @@ Expected ESP32 response fields:
 
 - `timestamp`, `user_id`, `medication`, `result`, `details`
 
+`embeddings` (prototype extension)
+
+- `user_id`, `embedding[]`, `dim`, `model`, `source`, `updated_at`
+
 ## 9. Safety and Reliability Requirements
 
 - No dispense without successful local authentication.
@@ -150,5 +209,6 @@ Expected ESP32 response fields:
 - Local RealSense recognition branch can route `new` and `existing` paths correctly.
 - Existing user path triggers UART dispense command logic and logs result.
 - Registration stores channel mapping and profile data.
+- RealSense local script and Flask FSM share user profile semantics (`id`, `medication`, `dosage`, `servo_channel`) via canonical storage.
 - Frontend texts and workflow match the FSM states above.
 - Advice flow works with local fallback even if Gemini is unavailable.

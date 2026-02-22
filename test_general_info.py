@@ -80,7 +80,7 @@ def get_moon():
         params = {
             "lat": LAT,
             "lon": LON,
-            "date": "2026-02-22",
+            "date": datetime.utcnow().date().isoformat(),
             "offset": "+00:00"
         }
         headers = {"User-Agent": "robot-env-monitor"}

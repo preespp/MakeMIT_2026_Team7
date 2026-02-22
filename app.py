@@ -1,9 +1,17 @@
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+import json
+import time
+from pathlib import Path
+
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, url_for
 
 from pill_dispenser_fsm import PillDispenserFSM
 
 app = Flask(__name__)
 fsm = PillDispenserFSM()
+BASE_DIR = Path(__file__).resolve().parent
+RUNTIME_DIR = BASE_DIR / "data" / "runtime"
+REALSENSE_FRAME_FILE = RUNTIME_DIR / "realsense_latest.jpg"
+REALSENSE_META_FILE = RUNTIME_DIR / "realsense_meta.json"
 
 SCENE_TEMPLATES = {
     "idle": "Idle Welcome.html",
@@ -88,6 +96,76 @@ def api_users():
     return jsonify(users=fsm.list_users())
 
 
+@app.get("/api/realsense/meta")
+def api_realsense_meta():
+    if not REALSENSE_META_FILE.exists():
+        return jsonify(
+            available=False,
+            message="No RealSense stream metadata yet. Start face_med_reminder.py first.",
+        ), 404
+    try:
+        payload = json.loads(REALSENSE_META_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["available"] = True
+    return jsonify(payload)
+
+
+@app.get("/api/realsense/frame.jpg")
+def api_realsense_frame():
+    if not REALSENSE_FRAME_FILE.exists():
+        return jsonify(
+            available=False,
+            message="No RealSense frame yet. Start face_med_reminder.py first.",
+        ), 404
+    return send_file(str(REALSENSE_FRAME_FILE), mimetype="image/jpeg", conditional=False, max_age=0)
+
+
+@app.get("/api/realsense/stream.mjpg")
+def api_realsense_stream():
+    def generate():
+        last_mtime_ns = None
+        while True:
+            try:
+                if not REALSENSE_FRAME_FILE.exists():
+                    time.sleep(0.15)
+                    continue
+                stat = REALSENSE_FRAME_FILE.stat()
+                mtime_ns = getattr(stat, "st_mtime_ns", None)
+                if mtime_ns is not None and last_mtime_ns == mtime_ns:
+                    time.sleep(0.05)
+                    continue
+                frame_bytes = REALSENSE_FRAME_FILE.read_bytes()
+                if not frame_bytes:
+                    time.sleep(0.05)
+                    continue
+                last_mtime_ns = mtime_ns
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Cache-Control: no-cache\r\n"
+                    b"Pragma: no-cache\r\n\r\n"
+                    + frame_bytes
+                    + b"\r\n"
+                )
+                time.sleep(0.03)
+            except GeneratorExit:
+                break
+            except Exception:
+                time.sleep(0.1)
+
+    return Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
 @app.post("/api/start")
 @app.post("/api/start-monitoring")
 def api_start_monitoring():
@@ -136,6 +214,7 @@ def api_med_dispense():
 
 
 @app.post("/api/advice/gemini")
+@app.post("/api/advice")
 def api_advice_gemini():
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):

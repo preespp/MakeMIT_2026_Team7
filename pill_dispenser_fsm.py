@@ -9,6 +9,9 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from advice_engine import generate_advice_payload
+from shared_user_storage import SharedUserStorage
+
 
 class WorkflowState(str, Enum):
     WAITING_FOR_USER = "WAITING_FOR_USER"
@@ -72,10 +75,14 @@ class PillDispenserFSM:
         self._users_dir = self._base_dir / "data" / "users"
         self._faces_dir = self._base_dir / "data" / "faces"
         self._logs_dir = self._base_dir / "data" / "logs"
+        self._runtime_dir = self._base_dir / "data" / "runtime"
         self._users_dir.mkdir(parents=True, exist_ok=True)
         self._faces_dir.mkdir(parents=True, exist_ok=True)
         self._logs_dir.mkdir(parents=True, exist_ok=True)
+        self._runtime_dir.mkdir(parents=True, exist_ok=True)
         self._dispense_log_file = self._logs_dir / "dispense_log.jsonl"
+        self._shared_store = SharedUserStorage(self._base_dir)
+        self._pending_realsense_embedding_file = self._runtime_dir / "realsense_pending_embedding.json"
 
         self._record_event("INIT", self._state.value, "FSM initialized.")
 
@@ -240,6 +247,41 @@ class PillDispenserFSM:
             age = self._clean_text(payload.get("age"))
             servo_channel = self._parse_servo_channel(payload.get("servo_channel"), default=1)
             photo_data_url = payload.get("photo_data_url", "")
+            raw_medications = payload.get("medications")
+            raw_schedule_times = payload.get("schedule_times")
+
+            medications: list[dict[str, Any]] = []
+            if isinstance(raw_medications, list):
+                for item in raw_medications:
+                    if not isinstance(item, dict):
+                        continue
+                    med_name = self._clean_text(item.get("name"))
+                    if not med_name:
+                        continue
+                    times = item.get("times")
+                    if not isinstance(times, list):
+                        times = []
+                    medications.append(
+                        {
+                            "name": med_name,
+                            "times": [self._clean_text(t) for t in times if self._clean_text(t)],
+                            "dosage": self._clean_text(item.get("dosage") or ""),
+                            "servo_channel": self._parse_servo_channel(item.get("servo_channel"), default=servo_channel),
+                        }
+                    )
+
+            schedule_times: list[str] = []
+            if isinstance(raw_schedule_times, list):
+                schedule_times = [self._clean_text(t) for t in raw_schedule_times if self._clean_text(t)]
+
+            if not medication and medications:
+                medication = self._clean_text(medications[0].get("name"))
+            if not dosage and medications:
+                dosage = self._clean_text(medications[0].get("dosage")) or dosage
+            if not schedule_times and medications:
+                first_times = medications[0].get("times")
+                if isinstance(first_times, list):
+                    schedule_times = [self._clean_text(t) for t in first_times if self._clean_text(t)]
 
             if not name:
                 return self._response(False, "Name is required for registration.")
@@ -268,7 +310,12 @@ class PillDispenserFSM:
                 "image_path": str(face_file.relative_to(self._base_dir)),
                 "created_at": self._now().isoformat(),
             }
+            if medications:
+                profile["medications"] = medications
+            if schedule_times:
+                profile["schedule_times"] = schedule_times
             self._save_user_profile(profile)
+            self._try_attach_pending_realsense_embedding(user_id)
 
             self._active_user_id = user_id
             self._active_user_profile = profile
@@ -342,7 +389,10 @@ class PillDispenserFSM:
             if not profile:
                 return self._response(False, "User profile not found for advice generation.")
 
-            advice_payload = self._build_local_advice_payload(profile)
+            advice_payload = generate_advice_payload(
+                profile,
+                fallback_builder=self._build_local_advice_payload,
+            )
             response = self._response(True, "Advice payload generated.")
             response["advice_payload"] = advice_payload
             return response
@@ -352,8 +402,10 @@ class PillDispenserFSM:
         user_id = str(profile.get("id", self._active_user_id))
         channel = self._parse_servo_channel(profile.get("servo_channel"), default=1)
         dose = self._clean_text(profile.get("dosage")) or "1 unit"
+        dose_count = self._parse_dose_count(dose)
         medication = self._clean_text(profile.get("medication")) or "unknown_medication"
         request_id = f"disp-{self._now().strftime('%Y%m%d%H%M%S')}"
+        frame = self._build_uart_dispense_frame(channel=channel, dose_count=dose_count)
 
         command = {
             "cmd": "DISPENSE",
@@ -361,10 +413,15 @@ class PillDispenserFSM:
             "user_id": user_id,
             "channel": channel,
             "dose": dose,
+            "dose_count": dose_count,
             "medication": medication,
             "transport": self._uart_transport,
             "port": self._uart_port,
             "baud": self._uart_baud,
+            "frame_format": "SAURON_UART_V1",
+            "channel_counts": frame["channel_counts"],
+            "frame_hex": frame["frame_hex"],
+            "frame_bytes": frame["frame_bytes"],
         }
         self._last_uart_command = command
 
@@ -374,9 +431,10 @@ class PillDispenserFSM:
         return bool(response.get("ack", False))
 
     def _generate_health_advice(self, profile: dict[str, Any]) -> str:
-        # Lightweight default: local rule-based advice payload for hackathon speed.
-        # Later, backend can replace this with Gemini JSON and keep the same UI contract.
-        payload = self._build_local_advice_payload(profile)
+        payload = generate_advice_payload(
+            profile,
+            fallback_builder=self._build_local_advice_payload,
+        )
         name = str(profile.get("name", "there"))
         medication = payload.get("medication", "your medication")
         effects = ", ".join(payload.get("side_effects", []))
@@ -402,6 +460,10 @@ class PillDispenserFSM:
             "ack": True,
             "request_id": command.get("request_id", ""),
             "status": "OK",
+            "frame_format": command.get("frame_format", "SAURON_UART_V1"),
+            "channel_counts": command.get("channel_counts", []),
+            "dose_count": command.get("dose_count", 1),
+            "frame_hex": command.get("frame_hex", ""),
             "transport": self._uart_transport,
             "port": self._uart_port,
             "baud": self._uart_baud,
@@ -438,6 +500,47 @@ class PillDispenserFSM:
         if channel > 4:
             return 4
         return channel
+
+    def _parse_dose_count(self, value: Any) -> int:
+        text = self._clean_text(value)
+        match = re.search(r"(\d+)", text)
+        if not match:
+            return 1
+        try:
+            count = int(match.group(1))
+        except (TypeError, ValueError):
+            return 1
+        return max(1, min(20, count))
+
+    def _build_uart_dispense_frame(self, *, channel: int, dose_count: int) -> dict[str, Any]:
+        """
+        Placeholder UART frame contract for ESP32 firmware integration.
+        The frame carries counts for all 4 channels; ESP32 executes count per channel.
+
+        Byte layout (SAURON_UART_V1):
+          [0] 0xAA                start
+          [1] 0x01                version
+          [2] ch1_count
+          [3] ch2_count
+          [4] ch3_count
+          [5] ch4_count
+          [6] checksum            sum(bytes[1:6]) & 0xFF
+          [7] 0x55                end
+        """
+        ch = self._parse_servo_channel(channel, default=1)
+        count = max(1, min(20, int(dose_count or 1)))
+        channel_counts = [0, 0, 0, 0]
+        channel_counts[ch - 1] = count
+        frame_body = [0x01, *channel_counts]
+        checksum = sum(frame_body) & 0xFF
+        frame_bytes = [0xAA, *frame_body, checksum, 0x55]
+        frame_hex = " ".join(f"{b:02X}" for b in frame_bytes)
+        return {
+            "channel_counts": channel_counts,
+            "checksum": checksum,
+            "frame_bytes": frame_bytes,
+            "frame_hex": frame_hex,
+        }
 
     def _resolve_profile_for_api(self, user_id: Any) -> dict[str, Any] | None:
         safe_user_id = self._safe_user_id(str(user_id or ""))
@@ -489,6 +592,33 @@ class PillDispenserFSM:
         serialized = json.dumps(entry, ensure_ascii=True)
         with self._dispense_log_file.open("a", encoding="utf-8") as fh:
             fh.write(serialized + "\n")
+
+    def _try_attach_pending_realsense_embedding(self, user_id: str) -> None:
+        path = self._pending_realsense_embedding_file
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        embedding = payload.get("embedding")
+        if not isinstance(embedding, list) or not embedding:
+            return
+        try:
+            self._shared_store.save_embedding(
+                user_id,
+                [float(v) for v in embedding],
+                model=str(payload.get("model", "insightface_arcface")),
+                source="realsense_pending_registration",
+            )
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        except (TypeError, ValueError):
+            return
 
     def _to_error(self, message: str) -> dict:
         self._last_error = message

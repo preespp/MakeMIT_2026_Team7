@@ -12,9 +12,10 @@ Requirements:
 Usage:
   python face_med_reminder.py
 
-Detection distance: 65cm (configurable)
+Detection distance: 1.2m (configurable, aligned with FSM/UI)
 Max users: 10
-Storage: data/users.json
+Storage: canonical profiles in data/users/*.json + embeddings in data/embeddings/*.json
+         (legacy cache data/users.json maintained for compatibility)
 
 Architecture:
   - SCRFD for face detection (fast, accurate)
@@ -29,18 +30,22 @@ import pyrealsense2 as rs
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 
 os.environ["OMP_NUM_THREADS"] = "4"
 
 import insightface
 from insightface.app import FaceAnalysis
 
+from realsense_fsm_adapter import RealSenseFSMAdapter
+from shared_user_storage import SharedUserStorage
+
 # ======================= Configuration =======================
 
-USERS_JSON = os.path.join("data", "users.json")
+USERS_JSON = os.path.join("data", "users.json")  # legacy compatibility cache
 MAX_USERS = 10
-DETECTION_DISTANCE_M = 0.65       # 65cm
+DETECTION_DISTANCE_M = 1.2        # aligned with FSM / frontend wake threshold (meters)
 
 # --- Recognition thresholds (ArcFace cosine similarity) ---
 # Same person typically > 0.4, different person < 0.2
@@ -58,20 +63,33 @@ REGISTER_COOLDOWN_S = 5
 
 # InsightFace model: "buffalo_s" (fast) or "buffalo_l" (more accurate)
 INSIGHTFACE_MODEL = "buffalo_s"
+REALSENSE_RUNTIME_DIR = Path("data") / "runtime"
+REALSENSE_FRAME_FILE = REALSENSE_RUNTIME_DIR / "realsense_latest.jpg"
+REALSENSE_FRAME_META_FILE = REALSENSE_RUNTIME_DIR / "realsense_meta.json"
+REALSENSE_PENDING_EMBED_FILE = REALSENSE_RUNTIME_DIR / "realsense_pending_embedding.json"
+REALSENSE_JPEG_QUALITY = 85
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 # ======================= User Data =======================
 
+_SHARED_STORE = SharedUserStorage(Path(__file__).resolve().parent)
+
+
 def load_users():
-    if os.path.exists(USERS_JSON):
-        with open(USERS_JSON, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"users": []}
+    """
+    RealSense compatibility loader backed by canonical per-user storage.
+    Returns legacy-shaped payload: {"users": [...]} for minimal code changes below.
+    """
+    _SHARED_STORE.import_legacy_users_json()
+    return {"users": _SHARED_STORE.list_realsense_users(import_legacy=False)}
 
 
 def save_users(data):
-    os.makedirs(os.path.dirname(USERS_JSON), exist_ok=True)
-    with open(USERS_JSON, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    _SHARED_STORE.save_realsense_users(data if isinstance(data, dict) else {"users": []})
 
 
 def find_matching_user(embedding, data):
@@ -337,6 +355,25 @@ class MedReminderVision:
         self.overlay_lines = []
         self.overlay_color = (0, 255, 0)
         self.overlay_expire = 0
+        self.fsm_bridge = RealSenseFSMAdapter()
+        self.legacy_debug_ui_enabled = _env_flag("REALSENSE_LEGACY_DEBUG_UI", default=False)
+        self.legacy_registration_ui_enabled = _env_flag("REALSENSE_LEGACY_REGISTRATION_UI", default=False)
+        self.publish_web_stream_enabled = _env_flag("REALSENSE_WEB_STREAM_ENABLED", default=True)
+        self.runtime_dir = Path(__file__).resolve().parent / REALSENSE_RUNTIME_DIR
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.frame_file = Path(__file__).resolve().parent / REALSENSE_FRAME_FILE
+        self.frame_meta_file = Path(__file__).resolve().parent / REALSENSE_FRAME_META_FILE
+        self.pending_embed_file = Path(__file__).resolve().parent / REALSENSE_PENDING_EMBED_FILE
+        self._last_frame_publish = 0.0
+        self._frame_publish_interval_s = 0.10  # ~10 FPS for web stream
+        self._last_user_reload_check = 0.0
+        self._user_reload_check_interval_s = 1.0
+        self._user_store_signature = self._compute_user_store_signature()
+
+        if not self.legacy_debug_ui_enabled:
+            print("[INFO] Legacy OpenCV window UI disabled (REALSENSE_LEGACY_DEBUG_UI=0).")
+        if not self.legacy_registration_ui_enabled:
+            print("[INFO] Legacy OpenCV registration input disabled; use touchscreen registration UI.")
 
     def set_overlay(self, lines, color=(0, 255, 0), dur=6.0):
         self.overlay_lines = lines
@@ -352,6 +389,7 @@ class MedReminderVision:
         try:
             while True:
                 frames = self.pipe.wait_for_frames(5000)
+                self._maybe_reload_users()
                 aligned = self.align.process(frames)
                 depth_f = aligned.get_depth_frame()
                 color_f = aligned.get_color_frame()
@@ -364,14 +402,22 @@ class MedReminderVision:
 
                 # --- Registration mode ---
                 if self.registering:
-                    key = cv2.waitKey(1) & 0xFFFF
+                    key = -1
+                    if self.legacy_debug_ui_enabled:
+                        key = cv2.waitKey(1) & 0xFFFF
                     self.reg_gui.handle_key(key)
                     disp = self.reg_gui.draw(disp)
                     if self.reg_gui.done:
                         r = self.reg_gui.result
                         if r and self.pending_emb is not None and len(self.data["users"]) < MAX_USERS:
+                            first_med = r["medications"][0] if r.get("medications") else {}
+                            user_id = _SHARED_STORE.build_user_id(r["name"])
                             self.data["users"].append({
+                                "id": user_id,
                                 "name": r["name"], "age": r["age"],
+                                "medication": str(first_med.get("name", "")),
+                                "dosage": str(first_med.get("dosage", "1 unit") or "1 unit"),
+                                "servo_channel": int(first_med.get("servo_channel", 1) or 1),
                                 "medications": r["medications"],
                                 "face_encoding": self.pending_emb.tolist(),
                                 "created": datetime.now().isoformat(),
@@ -387,8 +433,11 @@ class MedReminderVision:
                         self.registering = False
                         self.pending_emb = None
                         self.tracker.reset()
+                        self.fsm_bridge.reset_session_hint()
                     self._draw_hud(disp)
-                    cv2.imshow("Med Reminder", disp)
+                    self._publish_web_frame(disp)
+                    if self.legacy_debug_ui_enabled:
+                        cv2.imshow("Med Reminder", disp)
                     continue
 
                 # --- Detection ---
@@ -416,6 +465,8 @@ class MedReminderVision:
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100,100,100), 1)
 
                 if best_face is not None and best_face.embedding is not None:
+                    if 0 < best_dist <= DETECTION_DISTANCE_M:
+                        self.fsm_bridge.push_distance(best_dist)
                     emb = best_face.embedding
                     bx = best_face.bbox.astype(int)
                     user, idx, score = find_matching_user(emb, self.data)
@@ -444,6 +495,9 @@ class MedReminderVision:
                             self.last_reminder[confirmed] = now
                             for u in self.data["users"]:
                                 if u["name"] == confirmed:
+                                    user_id = str(u.get("id", "")).strip()
+                                    if user_id:
+                                        self.fsm_bridge.report_recognition_existing(user_id, score)
                                     meds = get_pending_meds(u)
                                     self.set_overlay(
                                         [f"Hello, {confirmed}! (age: {u.get('age','?')})",
@@ -455,25 +509,158 @@ class MedReminderVision:
                     elif confirmed == "unknown":
                         if now - self.last_register > REGISTER_COOLDOWN_S:
                             self.last_register = now
-                            self.pending_emb = emb.copy()
-                            self.registering = True
-                            self.reg_gui = RegistrationGUI()
-                            self.reg_gui.start()
+                            self.fsm_bridge.report_recognition_new(score)
+                            self._publish_pending_embedding(emb, score)
+                            if self.legacy_registration_ui_enabled and self.legacy_debug_ui_enabled:
+                                self.pending_emb = emb.copy()
+                                self.registering = True
+                                self.reg_gui = RegistrationGUI()
+                                self.reg_gui.start()
+                                print("[NEW FACE] Starting legacy OpenCV registration...")
+                            else:
+                                self.pending_emb = emb.copy()
+                                self.set_overlay(
+                                    [
+                                        "Unknown face detected.",
+                                        "Touchscreen registration required.",
+                                        "Use web UI to enter profile and capture data.",
+                                    ],
+                                    (0, 165, 255),
+                                    4,
+                                )
+                                print("[NEW FACE] Routed to touchscreen registration UI (legacy reg disabled).")
                             self.tracker.reset()
-                            print("[NEW FACE] Starting registration...")
                 else:
                     if self.tracker.is_stale(now):
                         self.tracker.reset()
 
                 self._draw_overlay(disp)
                 self._draw_hud(disp)
-                cv2.imshow("Med Reminder", disp)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                self._publish_web_frame(disp)
+                if self.legacy_debug_ui_enabled:
+                    cv2.imshow("Med Reminder", disp)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
         finally:
             self.pipe.stop()
-            cv2.destroyAllWindows()
+            if self.legacy_debug_ui_enabled:
+                cv2.destroyAllWindows()
             print("[INFO] Stopped.")
+
+    def _compute_user_store_signature(self):
+        """
+        Lightweight signature of canonical user/embedding JSON files so we can hot-reload
+        when the touchscreen frontend registers a new user while this process is running.
+        """
+        latest_mtime_ns = 0
+        json_count = 0
+        for folder in (_SHARED_STORE.users_dir, _SHARED_STORE.embeddings_dir):
+            try:
+                paths = folder.glob("*.json")
+            except OSError:
+                continue
+            for path in paths:
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                json_count += 1
+                latest_mtime_ns = max(latest_mtime_ns, int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9))))
+        return (json_count, latest_mtime_ns)
+
+    def _maybe_reload_users(self):
+        now = time.time()
+        if (now - self._last_user_reload_check) < self._user_reload_check_interval_s:
+            return
+        self._last_user_reload_check = now
+
+        sig = self._compute_user_store_signature()
+        if sig == self._user_store_signature:
+            return
+
+        old_count = len(self.data.get("users", []))
+        self.data = load_users()
+        self._user_store_signature = sig
+        new_count = len(self.data.get("users", []))
+        print(f"[INFO] Reloaded user store: {old_count} -> {new_count} users.")
+
+    def _publish_web_frame(self, frame):
+        if not self.publish_web_stream_enabled:
+            return
+        now = time.time()
+        if (now - self._last_frame_publish) < self._frame_publish_interval_s:
+            return
+        self._last_frame_publish = now
+
+        ok, buf = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), int(REALSENSE_JPEG_QUALITY)],
+        )
+        if not ok:
+            return
+
+        tmp_frame = self.frame_file.with_suffix(".jpg.tmp")
+        tmp_frame.write_bytes(buf.tobytes())
+        try:
+            tmp_frame.replace(self.frame_file)
+        except PermissionError:
+            self.frame_file.write_bytes(buf.tobytes())
+            try:
+                if tmp_frame.exists():
+                    tmp_frame.unlink()
+            except OSError:
+                pass
+
+        meta = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "legacy_debug_ui_enabled": self.legacy_debug_ui_enabled,
+            "legacy_registration_ui_enabled": self.legacy_registration_ui_enabled,
+            "publish_web_stream_enabled": self.publish_web_stream_enabled,
+            "tracking_count": len(self.tracker.history),
+            "registering": bool(self.registering),
+            "users_count": len(self.data.get("users", [])),
+            "distance_threshold_m": DETECTION_DISTANCE_M,
+            "pending_embedding_available": bool(self.pending_emb is not None or self.pending_embed_file.exists()),
+        }
+        tmp_meta = self.frame_meta_file.with_suffix(".json.tmp")
+        tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        try:
+            tmp_meta.replace(self.frame_meta_file)
+        except PermissionError:
+            self.frame_meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            try:
+                if tmp_meta.exists():
+                    tmp_meta.unlink()
+            except OSError:
+                pass
+
+    def _publish_pending_embedding(self, embedding, score):
+        if embedding is None:
+            return
+        try:
+            emb = [float(v) for v in np.asarray(embedding, dtype=np.float32).flatten().tolist()]
+        except Exception:
+            return
+        payload = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "source": "realsense_unknown_face",
+            "model": INSIGHTFACE_MODEL,
+            "score": float(score) if score is not None else None,
+            "embedding": emb,
+            "dim": len(emb),
+        }
+        tmp = self.pending_embed_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        try:
+            tmp.replace(self.pending_embed_file)
+        except PermissionError:
+            self.pending_embed_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
 
     def _draw_overlay(self, disp):
         if not self.overlay_lines or time.time() >= self.overlay_expire:

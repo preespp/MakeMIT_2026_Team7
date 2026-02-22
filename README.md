@@ -26,6 +26,21 @@ python app.py
 Server URL: `http://localhost:5000`  
 Runtime assumption: access the app via `http://127.0.0.1:5000` (HTTP, not HTTPS).
 
+### Windows (PowerShell, no activation script required)
+
+```powershell
+python -m venv .venv; .\.venv\Scripts\python.exe -m pip install -r requirements.txt; .\.venv\Scripts\python.exe app.py
+```
+
+### Jetson (recommended target runtime)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
+
 ## Confirmed System Architecture
 
 - Jetson runs local RealSense-based face recognition.
@@ -34,6 +49,13 @@ Runtime assumption: access the app via `http://127.0.0.1:5000` (HTTP, not HTTPS)
 - Motors use external battery power rail.
 - ESP32 logic path is powered through USB from Jetson.
 - Gemini is optional post-dispense advice enhancement.
+
+## Current Integration Status (Important)
+
+- `Flask + FSM + touchscreen web UI` are integrated and drive the 8 scene pages.
+- `face_med_reminder.py` (RealSense + InsightFace) now aligns to the same user storage schema and can bridge events to the Flask FSM API.
+- RealSense registration UI is still OpenCV-based (separate from touchscreen registration UI).
+- Gemini advice is optional and backend-side with strict JSON parsing + fallback to local rule engine.
 
 ## FSM Workflow (Current Code)
 
@@ -62,13 +84,16 @@ High-level grouped stages:
 
 - Face images: `data/faces/<user_id>.jpg`
 - User profiles: `data/users/<user_id>.json`
+- Face embeddings (RealSense/InsightFace): `data/embeddings/<user_id>.json`
 - Dispense logs: `data/logs/dispense_log.jsonl`
+- Legacy RealSense cache (compatibility only): `data/users.json`
 
 Folders are created automatically and gitignored.
 
 ## API Routes (Implemented)
 
-- `GET /`: frontend dashboard
+- `GET /`: scene router (redirects to current FSM scene at `/ui-scene/<slug>`)
+- `GET /dashboard`: legacy shell/debug dashboard (fallback only)
 - `GET /health`: health check
 - `GET /api/status`: full FSM snapshot for UI
 - `GET /api/users`: list users
@@ -78,14 +103,51 @@ Folders are created automatically and gitignored.
 - `POST /api/recognition/local`: alias for local recognition submission
 - `POST /api/register`: save user + photo
 - `POST /api/med/dispense`: append dispense log payload
-- `POST /api/advice/gemini`: return structured advice payload
+- `POST /api/advice/gemini`: return structured advice payload (Gemini + fallback)
+- `POST /api/advice`: neutral alias for advice payload
 - `POST /api/stop-advice`: stop speaking flow
 - `POST /api/reset`: reset FSM
+
+## RealSense -> FSM Adapter (Jetson / Windows)
+
+`face_med_reminder.py` can bridge local RealSense events to the Flask FSM API:
+
+- `/api/start-monitoring`
+- `/api/distance`
+- `/api/recognition/local`
+
+Env vars:
+
+- `FSM_API_BASE_URL` (default: `http://127.0.0.1:5000`)
+- `FSM_API_BRIDGE_ENABLED` (default: `1`)
+
+This keeps the FSM/UI flow synchronized while preserving local InsightFace model inference on Jetson.
+
+## Gemini Advice Contract (Backend)
+
+The backend now builds a strict JSON prompt using:
+
+- local medication/profile data
+- local environment JSON from `general_data/` (weather, air quality, sun/moon, alerts, time)
+
+Expected normalized advice payload shape:
+
+```json
+{
+  "medication": "Ibuprofen",
+  "side_effects": ["stomach discomfort", "nausea", "dizziness"],
+  "advice": "Take with food and avoid alcohol today. AQI is elevated, consider limiting outdoor exertion.",
+  "source": "gemini",
+  "environment_summary": {}
+}
+```
+
+If Gemini is unavailable or response JSON is invalid, the backend automatically falls back to the local rule engine.
 
 ## Integration Placeholders
 
 In `pill_dispenser_fsm.py`:
 
-- `_dispense_pill(profile)`: replace simulation with real UART command to ESP32
-- `_send_uart_dispense_command(...)`: connect to actual serial port/protocol
-- `_generate_health_advice(profile)`: replace local fallback with Gemini-backed flow if needed
+- `_send_uart_dispense_command(...)`: connect to actual serial port/protocol (currently placeholder ACK)
+- ESP32 firmware parser: consume `SAURON_UART_V1` frame (`4` channel counts + checksum)
+- Speaker/audio playback module: current TTS is frontend browser-side for kiosk demo

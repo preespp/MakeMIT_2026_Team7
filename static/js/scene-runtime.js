@@ -21,9 +21,16 @@
   let lastGreetingKey = "";
   const AUDIO_UNLOCK_KEY = "sauron_scene_audio_unlocked";
   const COMPLETION_HOLD_UNTIL_KEY = "sauron_completion_hold_until_ms";
+  const ADVICE_POST_SPEECH_DELAY_MS = 1800;
+  const GREETING_POST_SPEECH_DELAY_MS = 350;
   let runtimePanelReady = false;
   let runtimePanelOpen = false;
   let greetingHoldUntilMs = 0;
+  let adviceHoldUntilMs = 0;
+  let forceBypassCompletionHoldOnce = false;
+  let forceBypassAdviceHoldOnce = false;
+  let speechSequence = 0;
+  let realsenseSnapshotTimer = null;
 
   function currentSlug() {
     const parts = window.location.pathname.split("/").filter(Boolean);
@@ -109,6 +116,110 @@
     } catch (_err) {
       // ignore storage failures
     }
+  }
+
+  function mountRegistrationRealsenseFeed() {
+    if (currentSlug() !== "register") {
+      return;
+    }
+    const preview = document.querySelector(".face-preview");
+    if (!preview) {
+      return;
+    }
+
+    if (!document.getElementById("realsense-feed-style")) {
+      const style = document.createElement("style");
+      style.id = "realsense-feed-style";
+      style.textContent = [
+        ".face-preview .realsense-feed{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;background:#070e1d;display:block;}",
+        ".face-preview .realsense-feed.hidden{display:none;}",
+        ".face-preview .realsense-feed-overlay{position:absolute;left:10px;top:10px;z-index:3;padding:4px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.08em;background:rgba(7,14,29,.65);color:#9ab0cb;border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(6px);}",
+        ".face-preview .realsense-feed-overlay.live{color:#b8ffe9;border-color:rgba(60,209,160,.35);box-shadow:0 0 0 1px rgba(60,209,160,.15) inset;}",
+      ].join("");
+      document.head.appendChild(style);
+    }
+
+    let feedImg = document.getElementById("realsense-live-feed");
+    if (!feedImg) {
+      feedImg = document.createElement("img");
+      feedImg.id = "realsense-live-feed";
+      feedImg.className = "realsense-feed";
+      feedImg.alt = "RealSense live feed";
+      feedImg.loading = "eager";
+      feedImg.decoding = "async";
+      preview.insertBefore(feedImg, preview.firstChild || null);
+    }
+
+    // Keep existing scan line / badges / icon above the video feed.
+    [...preview.children].forEach((child) => {
+      if (child === feedImg) {
+        return;
+      }
+      if (child instanceof HTMLElement) {
+        if (!child.style.position) {
+          child.style.position = "relative";
+        }
+        child.style.zIndex = child.style.zIndex || "2";
+      }
+    });
+
+    let badge = document.getElementById("realsense-feed-badge");
+    if (!badge) {
+      badge = document.createElement("div");
+      badge.id = "realsense-feed-badge";
+      badge.className = "realsense-feed-overlay";
+      badge.textContent = "REALSENSE LINKING";
+      preview.appendChild(badge);
+    }
+
+    if (feedImg.dataset.streamBound === "1") {
+      return;
+    }
+    feedImg.dataset.streamBound = "1";
+
+    const setBadge = (text, isLive) => {
+      if (!badge) {
+        return;
+      }
+      badge.textContent = text;
+      badge.classList.toggle("live", !!isLive);
+    };
+
+    const stopSnapshotFallback = () => {
+      if (realsenseSnapshotTimer) {
+        clearInterval(realsenseSnapshotTimer);
+        realsenseSnapshotTimer = null;
+      }
+    };
+
+    const startSnapshotFallback = () => {
+      if (realsenseSnapshotTimer) {
+        return;
+      }
+      setBadge("REALSENSE SNAPSHOT", false);
+      const tick = () => {
+        feedImg.src = `/api/realsense/frame.jpg?ts=${Date.now()}`;
+      };
+      realsenseSnapshotTimer = window.setInterval(tick, 300);
+      tick();
+    };
+
+    feedImg.addEventListener("load", () => {
+      const icon = preview.querySelector("iconify-icon");
+      if (icon) {
+        icon.style.opacity = "0.10";
+      }
+      setBadge("REALSENSE LIVE", true);
+      stopSnapshotFallback();
+    });
+
+    feedImg.addEventListener("error", () => {
+      setBadge("REALSENSE OFFLINE", false);
+      startSnapshotFallback();
+    });
+
+    setBadge("REALSENSE CONNECTING", false);
+    feedImg.src = `/api/realsense/stream.mjpg?ts=${Date.now()}`;
   }
 
   function ensureRuntimePanel() {
@@ -326,12 +437,38 @@
     if (selectedVoice) {
       utterance.voice = selectedVoice;
     }
+    const seq = ++speechSequence;
+    if (typeof opts.onend === "function") {
+      utterance.onend = () => {
+        if (seq !== speechSequence) {
+          return;
+        }
+        try {
+          opts.onend();
+        } catch (_err) {
+          // ignore callback errors
+        }
+      };
+    }
+    if (typeof opts.onerror === "function") {
+      utterance.onerror = () => {
+        if (seq !== speechSequence) {
+          return;
+        }
+        try {
+          opts.onerror();
+        } catch (_err) {
+          // ignore callback errors
+        }
+      };
+    }
     window.speechSynthesis.speak(utterance);
     return true;
   }
 
   function cancelSpeech() {
     if ("speechSynthesis" in window) {
+      speechSequence += 1;
       window.speechSynthesis.cancel();
     }
   }
@@ -357,10 +494,55 @@
     return canvas.toDataURL("image/jpeg", 0.82);
   }
 
+  function capturePhotoFromRealsenseFeed() {
+    const feedImg = document.getElementById("realsense-live-feed");
+    if (!(feedImg instanceof HTMLImageElement)) {
+      return "";
+    }
+    const width = feedImg.naturalWidth || feedImg.width || 0;
+    const height = feedImg.naturalHeight || feedImg.height || 0;
+    if (!width || !height) {
+      return "";
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return "";
+    }
+    try {
+      ctx.drawImage(feedImg, 0, 0, width, height);
+      return canvas.toDataURL("image/jpeg", 0.9);
+    } catch (_err) {
+      return "";
+    }
+  }
+
   function parseRegistrationFields() {
     const inputs = [...document.querySelectorAll("input.input-field")];
-    const select = document.querySelector("select.input-field");
-    const [nameInput, ageInput, medInput, dosageInput] = inputs;
+    const select =
+      document.getElementById("reg-servo-channel")
+      || document.querySelector('select[data-field="servo_channel"]')
+      || document.querySelector("select.input-field");
+    const [fallbackNameInput, fallbackAgeInput, fallbackMedInput, fallbackDosageInput] = inputs;
+
+    const nameInput =
+      document.getElementById("reg-name")
+      || document.querySelector('input[data-field="name"]')
+      || fallbackNameInput;
+    const ageInput =
+      document.getElementById("reg-age")
+      || document.querySelector('input[data-field="age"]')
+      || fallbackAgeInput;
+    const medInput =
+      document.getElementById("reg-medication")
+      || document.querySelector('input[data-field="medication"]')
+      || fallbackMedInput;
+    const dosageInput =
+      document.getElementById("reg-dosage")
+      || document.querySelector('input[data-field="dosage"]')
+      || fallbackDosageInput;
 
     const name = (nameInput?.value || "").trim() || "Demo User";
     const age = (ageInput?.value || "").trim();
@@ -513,6 +695,7 @@
 
   function bindSceneHandlers() {
     bindDebugTriggers();
+    mountRegistrationRealsenseFeed();
 
     bindClick("cta-start-session", async () => {
       unlockAudio();
@@ -553,7 +736,7 @@
 
     bindClick("submit-registration", async () => {
       if (!capturedPhotoDataUrl) {
-        capturedPhotoDataUrl = buildFallbackPhotoDataUrl();
+        capturedPhotoDataUrl = capturePhotoFromRealsenseFeed() || buildFallbackPhotoDataUrl();
       }
       const payload = {
         ...parseRegistrationFields(),
@@ -569,9 +752,15 @@
 
     bindClick("finish-btn", async () => {
       if (latestStatus?.state === "SPEAKING_ADVICE") {
+        forceBypassAdviceHoldOnce = true;
+        adviceHoldUntilMs = 0;
         cancelSpeech();
         await dispatchAction("/api/stop-advice");
         return;
+      }
+      if (currentSlug() === "completion") {
+        forceBypassCompletionHoldOnce = true;
+        clearCompletionHold();
       }
       cancelSpeech();
       await dispatchAction("/api/reset");
@@ -591,12 +780,12 @@
       // local demo placeholder
     });
 
-    const captureBtn = findButtonByText(/capture face data/i);
+    const captureBtn = document.getElementById("capture-face-data-btn") || findButtonByText(/capture face data/i);
     if (captureBtn && captureBtn.dataset.localBound !== "1") {
       captureBtn.dataset.localBound = "1";
       captureBtn.addEventListener("click", (event) => {
         event.preventDefault();
-        capturedPhotoDataUrl = buildFallbackPhotoDataUrl();
+        capturedPhotoDataUrl = capturePhotoFromRealsenseFeed() || buildFallbackPhotoDataUrl();
         captureBtn.textContent = "Face Data Captured";
         captureBtn.classList.add("opacity-80");
       });
@@ -610,8 +799,16 @@
       const key = `${user.id || user.name}:${status.state}`;
       if (key !== lastGreetingKey) {
         const greetingText = `Hello ${user.name}, dispensing your medication now.`;
-        if (speakText(greetingText)) {
-          greetingHoldUntilMs = Date.now() + estimateSpeechMs(greetingText, 1.0);
+        const fallbackHold = Date.now() + estimateSpeechMs(greetingText, 1.0) + GREETING_POST_SPEECH_DELAY_MS;
+        if (speakText(greetingText, {
+          onend: () => {
+            greetingHoldUntilMs = Date.now() + GREETING_POST_SPEECH_DELAY_MS;
+          },
+          onerror: () => {
+            greetingHoldUntilMs = Date.now() + 200;
+          },
+        })) {
+          greetingHoldUntilMs = fallbackHold;
           lastGreetingKey = key;
         }
       }
@@ -620,7 +817,18 @@
     if (status.state === "SPEAKING_ADVICE" && status.advice_text) {
       const key = `${user.id || "anon"}:${status.advice_text}`;
       if (key !== lastSpokenAdviceKey) {
-        if (speakText(status.advice_text, { rate: 0.96, pitch: 1.0 })) {
+        const fallbackHold = Date.now() + estimateSpeechMs(status.advice_text, 0.96) + ADVICE_POST_SPEECH_DELAY_MS;
+        if (speakText(status.advice_text, {
+          rate: 0.96,
+          pitch: 1.0,
+          onend: () => {
+            adviceHoldUntilMs = Date.now() + ADVICE_POST_SPEECH_DELAY_MS;
+          },
+          onerror: () => {
+            adviceHoldUntilMs = Date.now() + 300;
+          },
+        })) {
+          adviceHoldUntilMs = fallbackHold;
           lastSpokenAdviceKey = key;
         }
       }
@@ -630,6 +838,9 @@
       lastGreetingKey = "";
       lastSpokenAdviceKey = "";
       greetingHoldUntilMs = 0;
+      adviceHoldUntilMs = 0;
+      forceBypassCompletionHoldOnce = false;
+      forceBypassAdviceHoldOnce = false;
       clearCompletionHold();
     }
   }
@@ -654,15 +865,31 @@
       return;
     }
 
-    if (slug === "completion" && target === "idle") {
-      const remaining = getCompletionHoldRemainingSeconds();
-      if (remaining !== null && remaining > 0) {
+    if (slug === "advice" && target === "completion") {
+      if (forceBypassAdviceHoldOnce) {
+        forceBypassAdviceHoldOnce = false;
+      } else if (adviceHoldUntilMs > Date.now()) {
         bindSceneHandlers();
-        syncCompletionScene(status);
+        syncAdviceScene(status);
         updateRuntimePanel(status);
         return;
       }
-      clearCompletionHold();
+    }
+
+    if (slug === "completion" && target === "idle") {
+      if (forceBypassCompletionHoldOnce) {
+        forceBypassCompletionHoldOnce = false;
+        clearCompletionHold();
+      } else {
+        const remaining = getCompletionHoldRemainingSeconds();
+        if (remaining !== null && remaining > 0) {
+          bindSceneHandlers();
+          syncCompletionScene(status);
+          updateRuntimePanel(status);
+          return;
+        }
+        clearCompletionHold();
+      }
     }
 
     if (target !== slug) {
