@@ -112,8 +112,11 @@ let drawerOpen = false;
 let audioContext = null;
 let audioUnlocked = false;
 let selectedVoice = null;
+let activeAudio = null;
+let activeAudioUrl = "";
 let currentSceneSlug = "";
 let lastStatusData = null;
+const ELEVENLABS_TTS_ENDPOINT = "/api/tts/elevenlabs";
 
 function requestJson(url, method = "GET", body = null) {
   const options = {
@@ -622,6 +625,30 @@ function pickVoice() {
     voices[0];
 }
 
+function revokeActiveAudioUrl() {
+  if (!activeAudioUrl) {
+    return;
+  }
+  try {
+    URL.revokeObjectURL(activeAudioUrl);
+  } catch (_err) {
+    // ignore cleanup errors
+  }
+  activeAudioUrl = "";
+}
+
+function clearActiveAudio() {
+  if (activeAudio) {
+    try {
+      activeAudio.pause();
+    } catch (_err) {
+      // ignore pause failures
+    }
+    activeAudio = null;
+  }
+  revokeActiveAudioUrl();
+}
+
 function setAudioReadyVisual(ready) {
   if (!audioUnlockBtn) {
     return;
@@ -685,24 +712,56 @@ function playWakeTone() {
 }
 
 function speakText(text, options = {}) {
-  if (!audioUnlocked || !("speechSynthesis" in window)) {
+  if (!audioUnlocked) {
     return;
   }
   const normalized = String(text || "").trim();
   if (!normalized) {
     return;
   }
-  const utterance = new SpeechSynthesisUtterance(normalized);
-  utterance.lang = options.lang || "en-US";
-  utterance.pitch = options.pitch === undefined ? 1.06 : options.pitch;
-  utterance.rate = options.rate === undefined ? 1.0 : options.rate;
-  if (selectedVoice) {
-    utterance.voice = selectedVoice;
-  }
-  window.speechSynthesis.speak(utterance);
+  cancelSpeech();
+
+  fetch(`${ELEVENLABS_TTS_ENDPOINT}?_=${Date.now()}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: normalized }),
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.blob();
+    })
+    .then((blob) => {
+      if (!(blob instanceof Blob) || blob.size <= 0) {
+        throw new Error("empty audio");
+      }
+      clearActiveAudio();
+      const objectUrl = URL.createObjectURL(blob);
+      activeAudio = new Audio(objectUrl);
+      activeAudioUrl = objectUrl;
+      activeAudio.onended = () => clearActiveAudio();
+      activeAudio.onerror = () => clearActiveAudio();
+      return activeAudio.play();
+    })
+    .catch(() => {
+      clearActiveAudio();
+      if (!("speechSynthesis" in window)) {
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(normalized);
+      utterance.lang = options.lang || "en-US";
+      utterance.pitch = options.pitch === undefined ? 1.06 : options.pitch;
+      utterance.rate = options.rate === undefined ? 1.0 : options.rate;
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+      }
+      window.speechSynthesis.speak(utterance);
+    });
 }
 
 function cancelSpeech() {
+  clearActiveAudio();
   if ("speechSynthesis" in window) {
     window.speechSynthesis.cancel();
   }

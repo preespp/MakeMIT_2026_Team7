@@ -4,6 +4,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import requests as http_requests
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, url_for
 
 from pill_dispenser_fsm import PillDispenserFSM
@@ -346,6 +347,98 @@ def api_advice_gemini():
     if not isinstance(payload, dict):
         return jsonify(fsm.status() | {"ok": False, "message": "Request JSON must be an object."}), 400
     return jsonify(fsm.get_advice_payload(payload))
+
+
+@app.post("/api/tts")
+@app.post("/api/tts/elevenlabs")
+def api_tts_elevenlabs():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(ok=False, message="Request JSON must be an object."), 400
+
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return jsonify(ok=False, message="text is required."), 400
+    if len(text) > 5000:
+        return jsonify(ok=False, message="text is too long (max 5000 chars)."), 400
+
+    api_key = str(os.getenv("ELEVENLABS_API_KEY", "")).strip()
+    if not api_key:
+        return jsonify(ok=False, message="ELEVENLABS_API_KEY is not configured on the server."), 503
+
+    voice_id = str(
+        payload.get("voice_id")
+        or os.getenv("ELEVENLABS_VOICE_ID")
+        or "21m00Tcm4TlvDq8ikWAM"
+    ).strip()
+    model_id = str(
+        payload.get("model_id")
+        or os.getenv("ELEVENLABS_MODEL_ID")
+        or "eleven_multilingual_v2"
+    ).strip()
+    output_format = str(
+        payload.get("output_format")
+        or os.getenv("ELEVENLABS_OUTPUT_FORMAT")
+        or "mp3_44100_128"
+    ).strip()
+
+    voice_settings = payload.get("voice_settings")
+    if not isinstance(voice_settings, dict):
+        voice_settings = {}
+
+    # Keep defaults conservative and natural; caller can override selectively.
+    merged_voice_settings = {
+        "stability": float(voice_settings.get("stability", 0.45)),
+        "similarity_boost": float(voice_settings.get("similarity_boost", 0.8)),
+    }
+    if "style" in voice_settings:
+        merged_voice_settings["style"] = float(voice_settings["style"])
+    if "use_speaker_boost" in voice_settings:
+        merged_voice_settings["use_speaker_boost"] = bool(voice_settings["use_speaker_boost"])
+
+    upstream_body = {
+        "text": text,
+        "model_id": model_id,
+        "voice_settings": merged_voice_settings,
+    }
+
+    try:
+        upstream = http_requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            params={"output_format": output_format},
+            headers={
+                "xi-api-key": api_key,
+                "Accept": "audio/mpeg",
+                "Content-Type": "application/json",
+            },
+            json=upstream_body,
+            timeout=25,
+        )
+    except http_requests.RequestException as exc:
+        return jsonify(ok=False, message=f"ElevenLabs request failed: {exc.__class__.__name__}"), 502
+
+    if upstream.status_code >= 400:
+        detail = ""
+        try:
+            err_payload = upstream.json()
+            detail = str(err_payload.get("detail") or err_payload.get("message") or "").strip()
+        except Exception:
+            detail = (upstream.text or "").strip()[:200]
+        return jsonify(
+            ok=False,
+            message="ElevenLabs TTS failed.",
+            upstream_status=upstream.status_code,
+            detail=detail,
+        ), 502
+
+    return Response(
+        upstream.content,
+        mimetype=upstream.headers.get("Content-Type", "audio/mpeg"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.post("/api/reset")

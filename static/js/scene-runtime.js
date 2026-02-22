@@ -34,6 +34,9 @@
   let speechSequence = 0;
   let realsenseSnapshotTimer = null;
   let adviceAutoStopTimer = null;
+  let activeAudio = null;
+  let activeAudioUrl = "";
+  const ELEVENLABS_TTS_ENDPOINT = "/api/tts/elevenlabs";
 
   function enableTouchScrollSupport() {
     try {
@@ -71,6 +74,20 @@
   function currentSlug() {
     const parts = window.location.pathname.split("/").filter(Boolean);
     return (parts[parts.length - 1] || "idle").toLowerCase();
+  }
+
+  function updateRuntimeVoiceButtons() {
+    const unlockBtn = document.getElementById("runtimeDebugEnableVoice");
+    const testBtn = document.getElementById("runtimeDebugTestVoice");
+    if (unlockBtn) {
+      unlockBtn.textContent = audioUnlocked ? "Voice Ready" : "Enable Voice";
+      unlockBtn.classList.toggle("primary", !!audioUnlocked);
+    }
+    if (testBtn) {
+      testBtn.disabled = !audioUnlocked;
+      testBtn.style.opacity = audioUnlocked ? "1" : "0.45";
+      testBtn.style.pointerEvents = audioUnlocked ? "auto" : "none";
+    }
   }
 
   function targetSlugFromState(state) {
@@ -567,6 +584,10 @@
         '    <button class="rt-btn" id="runtimeDebugManualOverride" type="button">Manual Override Dispense</button>',
         '    <button class="rt-btn" id="runtimeDebugAdvicePayload" type="button">Fetch Advice</button>',
         "  </div>",
+        '  <div class="rt-actions">',
+        '    <button class="rt-btn" id="runtimeDebugEnableVoice" type="button">Enable Voice</button>',
+        '    <button class="rt-btn" id="runtimeDebugTestVoice" type="button">Test Voice</button>',
+        "  </div>",
         '  <div class="rt-small" id="runtimeDebugHint">Local FSM status for kiosk debugging.</div>',
         "</div>",
       ].join("");
@@ -587,6 +608,21 @@
     document.getElementById("runtimeDebugAdvicePayload")?.addEventListener("click", async () => {
       await dispatchAction("/api/advice", {});
     });
+    document.getElementById("runtimeDebugEnableVoice")?.addEventListener("click", () => {
+      unlockAudio();
+      updateRuntimeVoiceButtons();
+    });
+    document.getElementById("runtimeDebugTestVoice")?.addEventListener("click", () => {
+      if (!audioUnlocked) {
+        unlockAudio();
+      }
+      updateRuntimeVoiceButtons();
+      speakText("Voice test. ElevenLabs playback is ready.", {
+        rate: 0.98,
+        pitch: 1.0,
+      });
+    });
+    updateRuntimeVoiceButtons();
 
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
@@ -647,6 +683,7 @@
         : "Local FSM status for kiosk debugging.";
       hint.textContent = lastSummarySnippet;
     }
+    updateRuntimeVoiceButtons();
 
     const overrideBtn = document.getElementById("runtimeDebugManualOverride");
     if (overrideBtn) {
@@ -734,6 +771,30 @@
       null;
   }
 
+  function revokeActiveAudioUrl() {
+    if (!activeAudioUrl) {
+      return;
+    }
+    try {
+      URL.revokeObjectURL(activeAudioUrl);
+    } catch (_err) {
+      // ignore cleanup failures
+    }
+    activeAudioUrl = "";
+  }
+
+  function clearActiveAudio() {
+    if (activeAudio) {
+      try {
+        activeAudio.pause();
+      } catch (_err) {
+        // ignore
+      }
+      activeAudio = null;
+    }
+    revokeActiveAudioUrl();
+  }
+
   function unlockAudio() {
     if (audioUnlocked) {
       return true;
@@ -755,15 +816,8 @@
     }
   }
 
-  function speakText(text, opts = {}) {
-    if (!audioUnlocked) {
-      unlockAudio();
-    }
-    if (!audioUnlocked || !("speechSynthesis" in window)) {
-      return false;
-    }
-    const content = String(text || "").trim();
-    if (!content) {
+  function speakBrowserText(content, opts, seq) {
+    if (!("speechSynthesis" in window)) {
       return false;
     }
     const utterance = new SpeechSynthesisUtterance(content);
@@ -773,7 +827,6 @@
     if (selectedVoice) {
       utterance.voice = selectedVoice;
     }
-    const seq = ++speechSequence;
     if (typeof opts.onend === "function") {
       utterance.onend = () => {
         if (seq !== speechSequence) {
@@ -802,8 +855,122 @@
     return true;
   }
 
+  function trySpeakServerTts(content, opts, seq) {
+    const payload = {
+      text: content,
+    };
+    if (opts.voice_id) {
+      payload.voice_id = opts.voice_id;
+    }
+    if (opts.model_id) {
+      payload.model_id = opts.model_id;
+    }
+    if (opts.voice_settings && typeof opts.voice_settings === "object") {
+      payload.voice_settings = opts.voice_settings;
+    }
+
+    fetch(`${ELEVENLABS_TTS_ENDPOINT}?_=${Date.now()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          let detail = "";
+          try {
+            const err = await response.json();
+            detail = err?.message || err?.detail || "";
+          } catch (_err) {
+            detail = "";
+          }
+          throw new Error(detail || `HTTP ${response.status}`);
+        }
+        return response.blob();
+      })
+      .then((blob) => {
+        if (seq !== speechSequence) {
+          return;
+        }
+        if (!(blob instanceof Blob) || blob.size <= 0) {
+          throw new Error("Empty audio response");
+        }
+        clearActiveAudio();
+        const objectUrl = URL.createObjectURL(blob);
+        const audio = new Audio(objectUrl);
+        activeAudio = audio;
+        activeAudioUrl = objectUrl;
+        audio.preload = "auto";
+        audio.onended = () => {
+          if (seq !== speechSequence) {
+            return;
+          }
+          clearActiveAudio();
+          if (typeof opts.onend === "function") {
+            try {
+              opts.onend();
+            } catch (_err) {
+              // ignore callback errors
+            }
+          }
+        };
+        audio.onerror = () => {
+          if (seq !== speechSequence) {
+            return;
+          }
+          clearActiveAudio();
+          if (typeof opts.onerror === "function") {
+            try {
+              opts.onerror();
+            } catch (_err) {
+              // ignore callback errors
+            }
+          }
+        };
+        return audio.play();
+      })
+      .catch((_err) => {
+        if (seq !== speechSequence) {
+          return;
+        }
+        clearActiveAudio();
+        if (opts.fallbackToBrowserTts === false) {
+          if (typeof opts.onerror === "function") {
+            try {
+              opts.onerror();
+            } catch (__err) {
+              // ignore callback errors
+            }
+          }
+          return;
+        }
+        speakBrowserText(content, opts, seq);
+      });
+  }
+
+  function speakText(text, opts = {}) {
+    if (!audioUnlocked) {
+      unlockAudio();
+    }
+    const content = String(text || "").trim();
+    if (!audioUnlocked || !content) {
+      return false;
+    }
+
+    const seq = ++speechSequence;
+    cancelSpeech();
+    speechSequence = seq;
+
+    const preferServerTts = opts.preferServerTts !== false;
+    if (preferServerTts) {
+      trySpeakServerTts(content, opts, seq);
+      return true;
+    }
+    return speakBrowserText(content, opts, seq);
+  }
+
   function cancelSpeech() {
     clearAdviceAutoStopTimer();
+    clearActiveAudio();
     if ("speechSynthesis" in window) {
       speechSequence += 1;
       window.speechSynthesis.cancel();
