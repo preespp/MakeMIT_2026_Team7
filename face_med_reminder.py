@@ -30,6 +30,7 @@ import pyrealsense2 as rs
 import json
 import os
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +41,16 @@ from insightface.app import FaceAnalysis
 
 from realsense_fsm_adapter import RealSenseFSMAdapter
 from shared_user_storage import SharedUserStorage
+
+try:
+    import msvcrt  # type: ignore
+except Exception:  # pragma: no cover - non-Windows
+    msvcrt = None
+
+try:
+    import fcntl  # type: ignore
+except Exception:  # pragma: no cover - Windows
+    fcntl = None
 
 # ======================= Configuration =======================
 
@@ -66,6 +77,7 @@ INSIGHTFACE_MODEL = "buffalo_s"
 REALSENSE_RUNTIME_DIR = Path("data") / "runtime"
 REALSENSE_FRAME_FILE = REALSENSE_RUNTIME_DIR / "realsense_latest.jpg"
 REALSENSE_FRAME_META_FILE = REALSENSE_RUNTIME_DIR / "realsense_meta.json"
+REALSENSE_FRAME_META_LOCK_FILE = REALSENSE_RUNTIME_DIR / "realsense_meta.lock"
 REALSENSE_PENDING_EMBED_FILE = REALSENSE_RUNTIME_DIR / "realsense_pending_embedding.json"
 REALSENSE_JPEG_QUALITY = 85
 
@@ -73,6 +85,47 @@ REALSENSE_JPEG_QUALITY = 85
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+@contextmanager
+def _cross_process_file_lock(lock_file: Path, *, timeout_s: float = 0.15, poll_s: float = 0.005):
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    fh = lock_file.open("a+b")
+    locked = False
+    start = time.time()
+    try:
+        while True:
+            try:
+                if os.name == "nt" and msvcrt is not None:
+                    fh.seek(0, os.SEEK_END)
+                    if fh.tell() == 0:
+                        fh.write(b"0")
+                        fh.flush()
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                elif fcntl is not None:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except (BlockingIOError, OSError):
+                if (time.time() - start) >= timeout_s:
+                    raise TimeoutError(f"Timed out waiting for lock: {lock_file}")
+                time.sleep(poll_s)
+        yield
+    finally:
+        if locked:
+            try:
+                if os.name == "nt" and msvcrt is not None:
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                elif fcntl is not None:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+        try:
+            fh.close()
+        except Exception:
+            pass
 
 # ======================= User Data =======================
 
@@ -363,12 +416,20 @@ class MedReminderVision:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.frame_file = Path(__file__).resolve().parent / REALSENSE_FRAME_FILE
         self.frame_meta_file = Path(__file__).resolve().parent / REALSENSE_FRAME_META_FILE
+        self.frame_meta_lock_file = Path(__file__).resolve().parent / REALSENSE_FRAME_META_LOCK_FILE
         self.pending_embed_file = Path(__file__).resolve().parent / REALSENSE_PENDING_EMBED_FILE
         self._last_frame_publish = 0.0
         self._frame_publish_interval_s = 0.10  # ~10 FPS for web stream
         self._last_user_reload_check = 0.0
         self._user_reload_check_interval_s = 1.0
         self._user_store_signature = self._compute_user_store_signature()
+        self._web_status = {
+            "vision_state": "booting",
+            "vision_message": "Initializing RealSense + InsightFace...",
+            "match_name": "",
+            "match_score": None,
+            "distance_m": None,
+        }
 
         if not self.legacy_debug_ui_enabled:
             print("[INFO] Legacy OpenCV window UI disabled (REALSENSE_LEGACY_DEBUG_UI=0).")
@@ -379,6 +440,23 @@ class MedReminderVision:
         self.overlay_lines = lines
         self.overlay_color = color
         self.overlay_expire = time.time() + dur
+
+    def _set_web_status(
+        self,
+        *,
+        vision_state: str,
+        vision_message: str,
+        match_name: str = "",
+        match_score: float | None = None,
+        distance_m: float | None = None,
+    ):
+        self._web_status = {
+            "vision_state": str(vision_state or "").strip() or "unknown",
+            "vision_message": str(vision_message or "").strip(),
+            "match_name": str(match_name or "").strip(),
+            "match_score": float(match_score) if match_score is not None else None,
+            "distance_m": float(distance_m) if distance_m is not None else None,
+        }
 
     def run(self):
         print(f"\n{'='*55}")
@@ -399,9 +477,17 @@ class MedReminderVision:
                 img = np.asanyarray(color_f.get_data())
                 disp = img.copy()
                 now = time.time()
+                self._set_web_status(
+                    vision_state="scanning",
+                    vision_message="Scanning for a face within distance threshold.",
+                )
 
                 # --- Registration mode ---
                 if self.registering:
+                    self._set_web_status(
+                        vision_state="registering_legacy",
+                        vision_message="Legacy registration UI active.",
+                    )
                     key = -1
                     if self.legacy_debug_ui_enabled:
                         key = cv2.waitKey(1) & 0xFFFF
@@ -434,9 +520,9 @@ class MedReminderVision:
                         self.pending_emb = None
                         self.tracker.reset()
                         self.fsm_bridge.reset_session_hint()
-                    self._draw_hud(disp)
                     self._publish_web_frame(disp)
                     if self.legacy_debug_ui_enabled:
+                        self._draw_hud(disp)
                         cv2.imshow("Med Reminder", disp)
                     continue
 
@@ -454,15 +540,17 @@ class MedReminderVision:
                     # Draw all faces
                     if 0 < d <= DETECTION_DISTANCE_M:
                         cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (0,255,0), 2)
-                        cv2.putText(disp, f"{d:.2f}m", (bx[0], bx[1]-8),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,255,0), 2)
+                        if self.legacy_debug_ui_enabled:
+                            cv2.putText(disp, f"{d:.2f}m", (bx[0], bx[1]-8),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,255,0), 2)
                         if d < best_dist:
                             best_face = face
                             best_dist = d
                     elif d > DETECTION_DISTANCE_M:
                         cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (100,100,100), 1)
-                        cv2.putText(disp, f"{d:.2f}m (far)", (bx[0], bx[1]-8),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100,100,100), 1)
+                        if self.legacy_debug_ui_enabled:
+                            cv2.putText(disp, f"{d:.2f}m (far)", (bx[0], bx[1]-8),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100,100,100), 1)
 
                 if best_face is not None and best_face.embedding is not None:
                     if 0 < best_dist <= DETECTION_DISTANCE_M:
@@ -475,18 +563,31 @@ class MedReminderVision:
                         name = user["name"]
                         self.tracker.update(name, score, now)
                         cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (0,255,0), 3)
-                        cv2.putText(disp, f"{name} ({score:.2f})", (bx[0], bx[3]+22),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+                        self._set_web_status(
+                            vision_state="match_candidate",
+                            vision_message="Matched known user candidate. Confirming...",
+                            match_name=name,
+                            match_score=score,
+                            distance_m=best_dist,
+                        )
                     elif score < UNKNOWN_CEILING:
                         self.tracker.update("unknown", score, now)
                         cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (0,165,255), 3)
-                        cv2.putText(disp, f"Unknown ({score:.2f})", (bx[0], bx[3]+22),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,165,255), 2)
+                        self._set_web_status(
+                            vision_state="unknown_candidate",
+                            vision_message="Face not registered. Confirming before registration.",
+                            match_score=score,
+                            distance_m=best_dist,
+                        )
                     else:
                         # Uncertain zone - keep watching
                         cv2.rectangle(disp, (bx[0],bx[1]), (bx[2],bx[3]), (0,255,255), 2)
-                        cv2.putText(disp, f"Checking ({score:.2f})", (bx[0], bx[3]+22),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+                        self._set_web_status(
+                            vision_state="checking",
+                            vision_message="Recognition confidence is uncertain. Keep facing the camera.",
+                            match_score=score,
+                            distance_m=best_dist,
+                        )
 
                     # Multi-frame confirmation
                     confirmed = self.tracker.get_confirmed()
@@ -503,6 +604,13 @@ class MedReminderVision:
                                         [f"Hello, {confirmed}! (age: {u.get('age','?')})",
                                          "-"*30, "Medication Schedule:"] + meds,
                                         (0,255,0), 8)
+                                    self._set_web_status(
+                                        vision_state="recognized",
+                                        vision_message=f"Recognized {confirmed}. Dispatching to dispenser workflow.",
+                                        match_name=confirmed,
+                                        match_score=score,
+                                        distance_m=best_dist,
+                                    )
                                     print(f"[REMINDER] {confirmed}: {meds}")
                                     break
                             self.tracker.reset()
@@ -528,16 +636,32 @@ class MedReminderVision:
                                     (0, 165, 255),
                                     4,
                                 )
+                                self._set_web_status(
+                                    vision_state="registration_required",
+                                    vision_message="Face not registered. Please complete touchscreen registration.",
+                                    match_score=score,
+                                    distance_m=best_dist,
+                                )
                                 print("[NEW FACE] Routed to touchscreen registration UI (legacy reg disabled).")
                             self.tracker.reset()
                 else:
+                    if faces:
+                        self._set_web_status(
+                            vision_state="face_detected_far_or_invalid",
+                            vision_message="Face detected, but move closer to the camera for recognition.",
+                        )
+                    else:
+                        self._set_web_status(
+                            vision_state="scanning",
+                            vision_message="No face detected. Look at the camera to begin.",
+                        )
                     if self.tracker.is_stale(now):
                         self.tracker.reset()
 
-                self._draw_overlay(disp)
-                self._draw_hud(disp)
                 self._publish_web_frame(disp)
                 if self.legacy_debug_ui_enabled:
+                    self._draw_overlay(disp)
+                    self._draw_hud(disp)
                     cv2.imshow("Med Reminder", disp)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
@@ -622,18 +746,24 @@ class MedReminderVision:
             "users_count": len(self.data.get("users", [])),
             "distance_threshold_m": DETECTION_DISTANCE_M,
             "pending_embedding_available": bool(self.pending_emb is not None or self.pending_embed_file.exists()),
+            "vision_status": self._web_status,
         }
-        tmp_meta = self.frame_meta_file.with_suffix(".json.tmp")
-        tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         try:
-            tmp_meta.replace(self.frame_meta_file)
-        except PermissionError:
-            self.frame_meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-            try:
-                if tmp_meta.exists():
-                    tmp_meta.unlink()
-            except OSError:
-                pass
+            with _cross_process_file_lock(self.frame_meta_lock_file, timeout_s=0.12):
+                tmp_meta = self.frame_meta_file.with_suffix(".json.tmp")
+                tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+                try:
+                    tmp_meta.replace(self.frame_meta_file)
+                except PermissionError:
+                    self.frame_meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+                    try:
+                        if tmp_meta.exists():
+                            tmp_meta.unlink()
+                    except OSError:
+                        pass
+        except TimeoutError:
+            # Skip this metadata frame if another process is briefly reading/writing.
+            pass
 
     def _publish_pending_embedding(self, embedding, score):
         if embedding is None:
@@ -692,3 +822,4 @@ class MedReminderVision:
 
 if __name__ == "__main__":
     MedReminderVision().run()
+

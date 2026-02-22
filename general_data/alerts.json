@@ -10,13 +10,13 @@
     "type": "FeatureCollection",
     "features": [
         {
-            "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.df1af8fbac481cbef1e69d1b6aca7f89cf19529d.001.2",
+            "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.f2a93f1e909ffcdcc73c05608ffaff39e36709ce.001.1",
             "type": "Feature",
             "geometry": null,
             "properties": {
-                "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.df1af8fbac481cbef1e69d1b6aca7f89cf19529d.001.2",
+                "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.f2a93f1e909ffcdcc73c05608ffaff39e36709ce.001.1",
                 "@type": "wx:Alert",
-                "id": "urn:oid:2.49.0.1.840.0.df1af8fbac481cbef1e69d1b6aca7f89cf19529d.001.2",
+                "id": "urn:oid:2.49.0.1.840.0.f2a93f1e909ffcdcc73c05608ffaff39e36709ce.001.1",
                 "areaDesc": "Eastern Essex; Western Norfolk; Southeast Middlesex; Suffolk; Eastern Norfolk; Northern Bristol; Western Plymouth; Eastern Plymouth; Southern Bristol; Southern Plymouth; Barnstable; Dukes; Northwest Providence; Southeast Providence; Western Kent; Eastern Kent; Bristol; Washington; Newport; Block Island",
                 "geocode": {
                     "SAME": [
@@ -79,14 +79,21 @@
                     "https://api.weather.gov/zones/forecast/RIZ007",
                     "https://api.weather.gov/zones/forecast/RIZ008"
                 ],
-                "references": [],
-                "sent": "2026-02-21T12:29:00-05:00",
-                "effective": "2026-02-21T12:29:00-05:00",
+                "references": [
+                    {
+                        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.df1af8fbac481cbef1e69d1b6aca7f89cf19529d.001.2",
+                        "identifier": "urn:oid:2.49.0.1.840.0.df1af8fbac481cbef1e69d1b6aca7f89cf19529d.001.2",
+                        "sender": "w-nws.webmaster@noaa.gov",
+                        "sent": "2026-02-21T12:29:00-05:00"
+                    }
+                ],
+                "sent": "2026-02-22T01:45:00-05:00",
+                "effective": "2026-02-22T01:45:00-05:00",
                 "onset": "2026-02-22T16:00:00-05:00",
-                "expires": "2026-02-22T04:00:00-05:00",
+                "expires": "2026-02-22T16:15:00-05:00",
                 "ends": "2026-02-24T07:00:00-05:00",
                 "status": "Actual",
-                "messageType": "Alert",
+                "messageType": "Update",
                 "category": "Met",
                 "severity": "Extreme",
                 "certainty": "Likely",
@@ -94,8 +101,8 @@
                 "event": "Blizzard Warning",
                 "sender": "w-nws.webmaster@noaa.gov",
                 "senderName": "NWS Boston/Norton MA",
-                "headline": "Blizzard Warning issued February 21 at 12:29PM EST until February 24 at 7:00AM EST by NWS Boston/Norton MA",
-                "description": "* WHAT...Blizzard conditions expected. Total snow accumulations\nbetween 1 and 2 feet. Winds gusting as high as 60 mph.\n\n* WHERE...Portions of eastern, northeastern, and southeastern\nMassachusetts and northern and southern Rhode Island. This\nincludes Boston to Providence corridor.\n\n* WHEN...From 4 PM Sunday to 7 AM EST Tuesday.\n\n* IMPACTS...Visibilities may drop below 1/4 mile due to falling and\nblowing snow. The strong winds and weight of snow on tree limbs\nmay down power lines and could cause power outages. Whiteout\nconditions are expected and will make travel treacherous and\npotentially life-threatening. Travel could be very difficult to\nimpossible. The hazardous conditions will impact the Monday\nmorning and evening commutes. Strong winds could cause tree damage.",
+                "headline": "Blizzard Warning issued February 22 at 1:45AM EST until February 24 at 7:00AM EST by NWS Boston/Norton MA",
+                "description": "* WHAT...Blizzard conditions expected. Total snow accumulations\nbetween 1 and 2 feet. Winds gusting as high as 70 mph.\n\n* WHERE...Portions of eastern, northeastern, and southeastern\nMassachusetts and Rhode Island.\n\n* WHEN...From 4 PM this afternoon to 7 AM EST Tuesday.\n\n* IMPACTS...Visibilities may drop below 1/4 mile due to falling and\nblowing snow. The strong winds and weight of snow on tree limbs\nmay down power lines and could cause sporadic power outages.\nWhiteout conditions are expected and will make travel treacherous\nand potentially life-threatening. Travel could be very difficult\nto impossible. Areas of blowing snow could significantly reduce\nvisibility. The hazardous conditions could impact the Monday\nmorning and evening commutes. Very strong winds could cause\nextensive tree damage.",
                 "instruction": "Travel should be restricted to emergencies only. If you must travel,\nhave a winter survival kit with you. If you get stranded, stay with\nyour vehicle.",
                 "response": "Prepare",
                 "parameters": {
@@ -103,10 +110,10 @@
                         "WSWBOX"
                     ],
                     "WMOidentifier": [
-                        "WWUS41 KBOX 211729"
+                        "WWUS41 KBOX 220645"
                     ],
                     "NWSheadline": [
-                        "BLIZZARD WARNING IN EFFECT FROM 4 PM SUNDAY TO 7 AM EST TUESDAY"
+                        "BLIZZARD WARNING REMAINS IN EFFECT FROM 4 PM THIS AFTERNOON TO 7 AM EST TUESDAY"
                     ],
                     "BLOCKCHANNEL": [
                         "EAS",
@@ -117,7 +124,7 @@
                         "WXR"
                     ],
                     "VTEC": [
-                        "/O.NEW.KBOX.BZ.W.0001.260222T2100Z-260224T1200Z/"
+                        "/O.CON.KBOX.BZ.W.0001.260222T2100Z-260224T1200Z/"
                     ],
                     "eventEndingTime": [
                         "2026-02-24T07:00:00-05:00"
@@ -139,5 +146,5 @@
         }
     ],
     "title": "Current watches, warnings, and advisories for 42.36 N, 71.0925 W",
-    "updated": "2026-02-21T17:29:29+00:00"
+    "updated": "2026-02-22T06:45:58+00:00"
 }

@@ -1,6 +1,6 @@
 # MakeMIT_2026_Team7
 
-Healthcare - Sauron - MLH (Gemini API) Track
+Healthcare - A.L.I.C.E. MedDispenser - MLH (Gemini API) Track
 
 ## Quick Start (Flask Prototype)
 

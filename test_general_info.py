@@ -4,11 +4,28 @@ import os
 from datetime import datetime
 import pytz
 from bs4 import BeautifulSoup  # pip install beautifulsoup4
+from zoneinfo import ZoneInfo
 
 # CONFIG
 LAT = 42.3600
 LON = -71.0925
-TIMEZONE = "America/New_York"
+
+
+def detect_default_timezone():
+    env_tz = str(os.getenv("TIMEZONE", "")).strip()
+    if env_tz:
+        return env_tz
+    try:
+        tzinfo = datetime.now().astimezone().tzinfo
+        key = getattr(tzinfo, "key", None)
+        if isinstance(key, str) and key.strip():
+            return key.strip()
+    except Exception:
+        pass
+    return "America/New_York"
+
+
+TIMEZONE = detect_default_timezone()
 
 BASE_DIR = "general_data"
 
@@ -108,9 +125,12 @@ def get_alerts():
 # 6. TIME (local)
 def get_time_local():
     try:
-        tz = pytz.timezone(TIMEZONE)
+        try:
+            tz = ZoneInfo(TIMEZONE)
+        except Exception:
+            tz = pytz.timezone(TIMEZONE)
         now = datetime.now(tz)
-        return {"datetime": now.isoformat()}
+        return {"datetime": now.isoformat(), "timezone": TIMEZONE}
     except Exception as e:
         print("Time fetch failed:", e)
         return {}

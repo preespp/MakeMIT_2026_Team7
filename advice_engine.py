@@ -75,6 +75,7 @@ def _read_env_summary(ctx: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "datetime": time_info.get("datetime"),
+        "timezone": time_info.get("timezone"),
         "temperature_c": weather_current.get("temperature_2m"),
         "wind_speed": weather_current.get("wind_speed_10m"),
         "wind_direction": weather_current.get("wind_direction_10m"),
@@ -127,25 +128,107 @@ def build_gemini_advice_prompt(
     medication = str(profile.get("medication", "unknown medication")).strip() or "unknown medication"
     name = str(profile.get("name", "user")).strip() or "user"
     dosage = str(profile.get("dosage", "")).strip()
+    language = str(profile.get("language", "en-US")).strip() or "en-US"
+    timezone_name = str(profile.get("timezone", "")).strip() or str(env.get("timezone", "")).strip() or "unknown"
     schedule_times = profile.get("schedule_times")
     if not isinstance(schedule_times, list):
         schedule_times = []
+    medications = profile.get("medications")
+    if not isinstance(medications, list):
+        medications = []
+    schedule_ctx = profile.get("schedule_context")
+    if not isinstance(schedule_ctx, dict):
+        schedule_ctx = {}
+    due_now = schedule_ctx.get("due_now") if isinstance(schedule_ctx.get("due_now"), list) else []
+    upcoming = schedule_ctx.get("upcoming") if isinstance(schedule_ctx.get("upcoming"), list) else []
+    dispense_plan = profile.get("dispense_plan")
+    if not isinstance(dispense_plan, dict):
+        dispense_plan = {}
+    dispense_items = dispense_plan.get("items") if isinstance(dispense_plan.get("items"), list) else []
+    dispensed_lines: list[str] = []
+    for item in dispense_items[:4]:
+        if not isinstance(item, dict):
+            continue
+        item_name = str(item.get("name", "")).strip() or str(item.get("medication", "")).strip() or "unknown"
+        dispensed_lines.append(
+            f"- {item_name} | channel={item.get('servo_channel', '?')} | "
+            f"count={item.get('count', item.get('dose_count', '?'))} | "
+            f"dosage={str(item.get('dosage','')).strip() or str(item.get('dose','')).strip() or 'unknown'}"
+        )
+    multi_med_event = len([x for x in dispensed_lines if x]) >= 2 or len([m for m in due_now if isinstance(m, dict)]) >= 2
+
+    meds_lines: list[str] = []
+    for med in medications[:4]:
+        if not isinstance(med, dict):
+            continue
+        med_name = str(med.get("name", "")).strip()
+        if not med_name:
+            continue
+        meds_lines.append(
+            f"- {med_name} | dosage={str(med.get('dosage','')).strip() or 'unknown'} | "
+            f"channel={med.get('servo_channel','?')} | times={json.dumps(med.get('times', []), ensure_ascii=False)}"
+        )
+    due_lines = []
+    for med in due_now[:4]:
+        if not isinstance(med, dict):
+            continue
+        due_lines.append(
+            f"- {med.get('name','unknown')} @ {med.get('matched_time','?')} "
+            f"(channel {med.get('servo_channel','?')}, delta {med.get('minutes_delta','?')} min)"
+        )
+    upcoming_lines = []
+    for med in upcoming[:4]:
+        if not isinstance(med, dict):
+            continue
+        upcoming_lines.append(
+            f"- {med.get('name','unknown')} @ {med.get('matched_time','?')} "
+            f"(channel {med.get('servo_channel','?')}, in {med.get('minutes_delta','?')} min)"
+        )
 
     return (
         "You are a professional medication safety assistant for a smart pill dispenser.\n"
+        "This response is shown once immediately after the dispenser has dispensed medication for the current session.\n"
         "Return ONLY strict JSON. No markdown. No extra text.\n"
         "JSON schema:\n"
-        "{\"side_effects\": [\"...\", \"...\", \"...\"], \"advice\": \"...\"}\n\n"
+        "{\"side_effects\": [\"...\", \"...\", \"...\"], "
+        "\"advice\": \"...\", "
+        "\"schedule_guidance\": [\"...\"], "
+        "\"environment_guidance\": [\"...\"]}\n\n"
         "Constraints:\n"
         "- side_effects: array of 1-3 short common side effects in plain English\n"
-        "- advice: 1-2 concise sentences that combine medication safety + today's environment context\n"
-        "- Keep language simple and safe; do not diagnose\n\n"
+        "- advice: 2-4 concise sentences for THIS medication-taking event only (immediate, practical, context-aware)\n"
+        "- advice must combine: medication type/dose + likely side effects + today's environment/time context when relevant\n"
+        "- advice should include at least one immediate action and/or one avoid/do-not-do suggestion when appropriate\n"
+        "- If drowsiness/lightheadedness is plausible, mention avoiding driving, machinery, or risky activity until the user knows how they feel\n"
+        "- If due_now is empty, treat this as a possible manual/unscheduled dose and include a brief timing caution in schedule_guidance or advice\n"
+        "- If 2 or more medications are dispensed now OR due now in the same session, explicitly consider combination effects / additive side effects (for example: drowsiness, dizziness, stomach irritation, dehydration risk) and mention the most relevant caution(s)\n"
+        "- In multi-medication situations, prioritize practical safety guidance over exhaustive lists, and note uncertainty conservatively if exact interaction data is not provided\n"
+        "- If a potentially risky combination effect is plausible, say what the user should avoid/do right now (e.g., avoid driving, alcohol, or strenuous activity; monitor for worsening symptoms)\n"
+        "- Do NOT use assistant persona/filler phrases (e.g., 'I'll be waiting for your next cycle')\n"
+        "- Do NOT make strong pharmacokinetic claims (e.g., 'maximum absorption') unless the provided context explicitly supports it\n"
+        "- schedule_guidance: 0-3 short actionable bullets about timing / due-now / next doses\n"
+        "- environment_guidance: 0-3 short actionable bullets about weather/air/alerts\n"
+        "- Keep language simple, safe, and non-diagnostic\n\n"
         f"User name: {name}\n"
+        f"Preferred language: {language}\n"
+        f"Profile timezone: {timezone_name}\n"
         f"Medication: {medication}\n"
         f"Dosage: {dosage or 'unknown'}\n"
         f"Schedule times: {', '.join([str(t) for t in schedule_times]) or 'unknown'}\n\n"
+        "Current dispense event (this session):\n"
+        f"- Multi-medication session likely: {'yes' if multi_med_event else 'no'}\n"
+        f"- Dispense summary text: {dispense_plan.get('summary_medications_text', 'N/A')}\n"
+        f"- Dispense items:\n{chr(10).join(dispensed_lines) if dispensed_lines else '- No structured dispense item list available'}\n\n"
+        "Registered medication schedule (up to 4 chambers):\n"
+        f"{chr(10).join(meds_lines) if meds_lines else '- No structured medication list available'}\n\n"
+        "Current schedule context:\n"
+        f"- Local datetime (schedule engine): {schedule_ctx.get('datetime_local', 'N/A')}\n"
+        "- This advice should reflect what is due now vs upcoming and the current local time context.\n"
+        f"- Due now medications:\n{chr(10).join(due_lines) if due_lines else '- None due now'}\n"
+        f"- Upcoming medications (next 120 min):\n{chr(10).join(upcoming_lines) if upcoming_lines else '- None upcoming'}\n\n"
         "Today's environment context (from local weather/time APIs):\n"
         f"- Local datetime: {env.get('datetime', 'N/A')}\n"
+        f"- Local timezone: {env.get('timezone', 'N/A')}\n"
         f"- Temperature (C): {env.get('temperature_c', 'N/A')}\n"
         f"- Wind speed: {env.get('wind_speed', 'N/A')}\n"
         f"- Wind direction: {env.get('wind_direction', 'N/A')}\n"
@@ -199,6 +282,8 @@ def _normalize_gemini_payload(obj: dict[str, Any]) -> dict[str, Any] | None:
         return None
     side_effects = obj.get("side_effects")
     advice = obj.get("advice")
+    schedule_guidance = obj.get("schedule_guidance")
+    environment_guidance = obj.get("environment_guidance")
 
     if isinstance(side_effects, str):
         side_effects = [s.strip() for s in re.split(r"[,\n;]+", side_effects) if s.strip()]
@@ -216,9 +301,23 @@ def _normalize_gemini_payload(obj: dict[str, Any]) -> dict[str, Any] | None:
     if not advice_text:
         return None
 
+    def _normalize_short_list(value: Any) -> list[str]:
+        if isinstance(value, str):
+            value = [s.strip() for s in re.split(r"[,\n;]+", value) if s.strip()]
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value[:3]:
+            txt = str(item or "").strip()
+            if txt:
+                out.append(txt)
+        return out
+
     return {
         "side_effects": normalized_side_effects[:3],
         "advice": advice_text,
+        "schedule_guidance": _normalize_short_list(schedule_guidance),
+        "environment_guidance": _normalize_short_list(environment_guidance),
     }
 
 
@@ -277,6 +376,9 @@ def generate_advice_payload(
         "medication": "...",
         "side_effects": [...],
         "advice": "...",
+        "schedule_guidance": [...],
+        "environment_guidance": [...],
+        "schedule_summary": {...},
         "source": "gemini" | "local_rule_engine",
         "environment_summary": {...}
       }
@@ -291,6 +393,13 @@ def generate_advice_payload(
         }
     ctx = general_context or load_general_context()
     env_summary = _read_env_summary(ctx)
+    schedule_ctx = profile.get("schedule_context") if isinstance(profile.get("schedule_context"), dict) else {}
+    schedule_summary = {
+        "datetime_local": schedule_ctx.get("datetime_local"),
+        "timezone": profile.get("timezone") or schedule_ctx.get("timezone"),
+        "due_now": schedule_ctx.get("due_now", []),
+        "upcoming": schedule_ctx.get("upcoming", []),
+    }
 
     api_key = str(os.getenv("GEMINI_API_KEY", "")).strip()
     enabled_env = str(os.getenv("ENABLE_GEMINI_ADVICE", "1")).strip().lower()
@@ -304,7 +413,10 @@ def generate_advice_payload(
             advice_text = str(payload.get("advice", "")).strip()
             payload["advice"] = (f"{advice_text} {env_note}" if advice_text else env_note).strip()
         payload["environment_summary"] = env_summary
+        payload["schedule_summary"] = schedule_summary
         payload.setdefault("source", "local_rule_engine")
+        payload.setdefault("schedule_guidance", [])
+        payload.setdefault("environment_guidance", [])
         return payload
 
     prompt = build_gemini_advice_prompt(profile, ctx)
@@ -320,7 +432,10 @@ def generate_advice_payload(
             advice_text = str(payload.get("advice", "")).strip()
             payload["advice"] = (f"{advice_text} {env_note}" if advice_text else env_note).strip()
         payload["environment_summary"] = env_summary
+        payload["schedule_summary"] = schedule_summary
         payload.setdefault("source", "local_rule_engine")
+        payload.setdefault("schedule_guidance", [])
+        payload.setdefault("environment_guidance", [])
         payload["gemini_error"] = "invalid_or_empty_response"
         return payload
 
@@ -328,8 +443,11 @@ def generate_advice_payload(
         "medication": str(profile.get("medication", base_fallback.get("medication", "your medication"))),
         "side_effects": parsed["side_effects"],
         "advice": parsed["advice"],
+        "schedule_guidance": parsed.get("schedule_guidance", []),
+        "environment_guidance": parsed.get("environment_guidance", []),
         "source": "gemini",
         "environment_summary": env_summary,
+        "schedule_summary": schedule_summary,
         "model": model_name,
         "prompt_format": "strict_json_v1",
     }
