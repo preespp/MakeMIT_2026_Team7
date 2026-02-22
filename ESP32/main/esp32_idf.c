@@ -7,10 +7,10 @@
 #include "esp_log.h"
 #include "cJSON.h"
 
-#define UART_PORT_NUM      UART_NUM_1
+#define UART_PORT_NUM      UART_NUM_0
 #define UART_BAUD_RATE     115200
-#define UART_RX_PIN        16
-#define UART_TX_PIN        17
+#define UART_RX_PIN        UART_PIN_NO_CHANGE
+#define UART_TX_PIN        UART_PIN_NO_CHANGE
 #define BUF_SIZE           1024
 
 // Servo pins
@@ -25,8 +25,6 @@
 #define MOVE_DURATION_MS   1000
 #define SHAKE_COUNT        3
 #define SHAKE_SPEED_MS     50
-
-static const char* TAG = "servo_uart";
 
 // Structure to store servo configuration
 typedef struct {
@@ -97,8 +95,6 @@ void uart_task(void* arg)
         int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE - 1, pdMS_TO_TICKS(100));
         if (len > 0) {
             data[len] = 0; // Null terminate
-            ESP_LOGI(TAG, "Received: %s", data);
-
             // Parse JSON
             cJSON* json = cJSON_Parse((char*)data);
             if (json) {
@@ -128,6 +124,10 @@ void uart_task(void* arg)
 
 void app_main(void)
 {
+    // Using the board's USB cable means the USB-UART bridge is connected to UART0.
+    // Silence app logs so JSON replies are not mixed with log lines on the same port.
+    esp_log_level_set("*", ESP_LOG_NONE);
+
     // Configure UART
     uart_config_t uart_config = {
         .baud_rate = UART_BAUD_RATE,
